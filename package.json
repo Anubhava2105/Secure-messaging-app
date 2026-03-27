@@ -1,0 +1,39 @@
+{
+  "name": "secure-messaging-app",
+  "version": "1.0.0",
+  "description": "Post-quantum secure messaging application with hybrid ECC+PQC encryption",
+  "private": true,
+  "workspaces": [
+    "client",
+    "server",
+    "electron"
+  ],
+  "scripts": {
+    "dev:client": "cd client && npm run dev",
+    "dev:server": "cd server && npm run dev",
+    "dev": "concurrently \"npm run dev:client\" \"npm run dev:server\"",
+    "build:client": "cd client && npm run build",
+    "build:server": "cd server && npm run build",
+    "build:electron": "cd electron && npm run build",
+    "build": "npm run build:client && npm run build:server && npm run build:electron",
+    "start:server": "cd server && npm run start",
+    "electron": "cd electron && npm run start",
+    "install:all": "npm install && cd client && npm install && cd ../server && npm install && cd ../electron && npm install"
+  },
+  "keywords": [
+    "secure-messaging",
+    "e2ee",
+    "end-to-end-encryption",
+    "post-quantum",
+    "pqc",
+    "ml-kem",
+    "kyber",
+    "electron",
+    "react"
+  ],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "concurrently": "^9.0.0"
+  }
+}

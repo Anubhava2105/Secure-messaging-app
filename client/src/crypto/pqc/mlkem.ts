@@ -1,10 +1,10 @@
 /**
  * ML-KEM-768 (Kyber) Post-Quantum Key Encapsulation Mechanism.
  *
- * This module provides the interface for ML-KEM-768 operations.
- * The actual implementation uses liboqs-wasm or equivalent WASM build.
+ * Uses the `mlkem` npm package — a pure TypeScript implementation
+ * of NIST FIPS 203, passing all official KAT vectors.
  *
- * SECURITY: No custom PQC implementations. Only use audited libraries.
+ * SECURITY: No custom PQC implementations. Only uses audited libraries.
  *
  * ML-KEM-768 parameters (FIPS 203):
  * - Public key: 1184 bytes
@@ -14,6 +14,7 @@
  * - Security level: NIST Level 3 (equivalent to AES-192)
  */
 
+import { createMlKem768 } from "mlkem";
 import type {
   IKemAlgorithm,
   KemKeyPair,
@@ -27,23 +28,7 @@ export const MLKEM768_CIPHERTEXT_SIZE = 1088;
 export const MLKEM768_SHARED_SECRET_SIZE = 32;
 
 /**
- * WASM module interface (matches liboqs-wasm structure).
- * This will be implemented by the actual WASM module.
- */
-interface MlKemWasmModule {
-  keypair(): { publicKey: Uint8Array; privateKey: Uint8Array };
-  encapsulate(publicKey: Uint8Array): {
-    ciphertext: Uint8Array;
-    sharedSecret: Uint8Array;
-  };
-  decapsulate(ciphertext: Uint8Array, privateKey: Uint8Array): Uint8Array;
-}
-
-/**
- * ML-KEM-768 KEM implementation.
- *
- * This class wraps the liboqs-wasm module to provide a clean interface
- * that matches our IKemAlgorithm interface for cryptographic agility.
+ * ML-KEM-768 KEM implementation backed by the `mlkem` package.
  */
 export class MlKem768 implements IKemAlgorithm {
   readonly name = "ML-KEM-768";
@@ -52,11 +37,11 @@ export class MlKem768 implements IKemAlgorithm {
   readonly ciphertextSize = MLKEM768_CIPHERTEXT_SIZE;
   readonly sharedSecretSize = MLKEM768_SHARED_SECRET_SIZE;
 
-  private wasmModule: MlKemWasmModule | null = null;
+  private instance: Awaited<ReturnType<typeof createMlKem768>> | null = null;
   private initialized = false;
 
   /**
-   * Initialize the WASM module.
+   * Initialize the ML-KEM-768 instance.
    * Must be called before any cryptographic operations.
    */
   async initialize(): Promise<void> {
@@ -64,27 +49,9 @@ export class MlKem768 implements IKemAlgorithm {
       return;
     }
 
-    try {
-      // Dynamic import of the WASM module
-      // TODO: Replace with actual liboqs-wasm package when available
-      // Example: const module = await import('liboqs-wasm');
-      // For now, we throw an error indicating the module needs to be installed
-      throw new Error(
-        "ML-KEM-768 WASM module not installed. Please install a compatible package:\n" +
-          "  npm install @aspect/mlkem-wasm  (or your preferred liboqs-wasm build)\n" +
-          "Then update this file to import from the installed package."
-      );
-    } catch (error) {
-      // Re-throw with context
-      if (error instanceof Error && error.message.includes("not installed")) {
-        throw error;
-      }
-      throw new Error(
-        `Failed to initialize ML-KEM-768 WASM module: ${
-          error instanceof Error ? error.message : "Unknown error"
-        }`
-      );
-    }
+    this.instance = await createMlKem768();
+    this.initialized = true;
+    console.log("[PQC] ML-KEM-768 initialized (FIPS 203)");
   }
 
   /**
@@ -102,11 +69,11 @@ export class MlKem768 implements IKemAlgorithm {
   async keypair(): Promise<KemKeyPair> {
     this.ensureInitialized();
 
-    const result = this.wasmModule!.keypair();
+    const [publicKey, privateKey] = this.instance!.generateKeyPair();
 
     return {
-      publicKey: new Uint8Array(result.publicKey),
-      privateKey: new Uint8Array(result.privateKey),
+      publicKey: new Uint8Array(publicKey),
+      privateKey: new Uint8Array(privateKey),
     };
   }
 
@@ -125,11 +92,11 @@ export class MlKem768 implements IKemAlgorithm {
       );
     }
 
-    const result = this.wasmModule!.encapsulate(publicKey);
+    const [ciphertext, sharedSecret] = this.instance!.encap(publicKey);
 
     return {
-      ciphertext: new Uint8Array(result.ciphertext),
-      sharedSecret: new Uint8Array(result.sharedSecret),
+      ciphertext: new Uint8Array(ciphertext),
+      sharedSecret: new Uint8Array(sharedSecret),
     };
   }
 
@@ -158,13 +125,13 @@ export class MlKem768 implements IKemAlgorithm {
       );
     }
 
-    const sharedSecret = this.wasmModule!.decapsulate(ciphertext, privateKey);
+    const sharedSecret = this.instance!.decap(ciphertext, privateKey);
 
     return new Uint8Array(sharedSecret);
   }
 
   private ensureInitialized(): void {
-    if (!this.initialized || !this.wasmModule) {
+    if (!this.initialized || !this.instance) {
       throw new Error(
         "ML-KEM-768 module not initialized. Call initialize() first."
       );
@@ -177,7 +144,7 @@ let mlkemInstance: MlKem768 | null = null;
 
 /**
  * Get the ML-KEM-768 singleton instance.
- * Initializes the WASM module on first call.
+ * Initializes the module on first call.
  */
 export async function getMlKem768(): Promise<MlKem768> {
   if (!mlkemInstance) {
@@ -189,8 +156,9 @@ export async function getMlKem768(): Promise<MlKem768> {
 
 /**
  * Check if ML-KEM-768 is available.
- * Use to gracefully degrade if WASM is not supported.
+ * Use to gracefully degrade if not supported.
  */
 export function isMlKem768Available(): boolean {
   return mlkemInstance?.isInitialized() ?? false;
 }
+

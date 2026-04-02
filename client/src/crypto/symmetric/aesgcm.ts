@@ -35,22 +35,41 @@ export class AesGcmCipher implements ICipherAlgorithm {
     key: Uint8Array,
     nonce: Uint8Array,
     plaintext: Uint8Array,
-    aad?: Uint8Array
+    aad?: Uint8Array,
   ): Promise<Uint8Array> {
     this.validateKey(key);
     this.validateNonce(nonce);
 
     const cryptoKey = await this.importKey(key);
 
+    // Ensure AAD is an ArrayBuffer (BufferSource)
+    let aadBuffer: ArrayBuffer | undefined = undefined;
+    const anyAad = aad as any;
+    if (anyAad) {
+      if (typeof anyAad === "string") {
+        const encoder = new TextEncoder();
+        aadBuffer = encoder.encode(anyAad).buffer;
+      } else if (anyAad instanceof Uint8Array) {
+        aadBuffer = toArrayBuffer(anyAad);
+      } else if (anyAad instanceof ArrayBuffer) {
+        aadBuffer = anyAad;
+      }
+    }
+
+    const algorithm: AesGcmParams = {
+      name: "AES-GCM",
+      iv: toArrayBuffer(nonce),
+      tagLength: 128, // 128-bit auth tag
+    };
+
+    if (aadBuffer) {
+      algorithm.additionalData = aadBuffer;
+    }
+
     const ciphertext = await crypto.subtle.encrypt(
-      {
-        name: "AES-GCM",
-        iv: toArrayBuffer(nonce),
-        additionalData: aad ? toArrayBuffer(aad) : undefined,
-        tagLength: 128, // 128-bit auth tag
-      },
+      algorithm,
       cryptoKey,
-      toArrayBuffer(plaintext)
+      toArrayBuffer(plaintext),
     );
 
     return new Uint8Array(ciphertext);
@@ -70,7 +89,7 @@ export class AesGcmCipher implements ICipherAlgorithm {
     key: Uint8Array,
     nonce: Uint8Array,
     ciphertext: Uint8Array,
-    aad?: Uint8Array
+    aad?: Uint8Array,
   ): Promise<Uint8Array> {
     this.validateKey(key);
     this.validateNonce(nonce);
@@ -81,16 +100,34 @@ export class AesGcmCipher implements ICipherAlgorithm {
 
     const cryptoKey = await this.importKey(key);
 
+    // Ensure AAD is an ArrayBuffer (BufferSource) for SubtleCrypto compatibility.
+    let aadBuffer: ArrayBuffer | undefined = undefined;
+    const anyAad = aad as any;
+    if (anyAad) {
+      if (typeof anyAad === "string") {
+        aadBuffer = new TextEncoder().encode(anyAad).buffer;
+      } else if (anyAad instanceof Uint8Array) {
+        aadBuffer = toArrayBuffer(anyAad);
+      } else if (anyAad instanceof ArrayBuffer) {
+        aadBuffer = anyAad;
+      }
+    }
+
     try {
+      const algorithm: AesGcmParams = {
+        name: "AES-GCM",
+        iv: toArrayBuffer(nonce),
+        tagLength: 128,
+      };
+
+      if (aadBuffer) {
+        algorithm.additionalData = aadBuffer;
+      }
+
       const plaintext = await crypto.subtle.decrypt(
-        {
-          name: "AES-GCM",
-          iv: toArrayBuffer(nonce),
-          additionalData: aad ? toArrayBuffer(aad) : undefined,
-          tagLength: 128,
-        },
+        algorithm,
         cryptoKey,
-        toArrayBuffer(ciphertext)
+        toArrayBuffer(ciphertext),
       );
 
       return new Uint8Array(plaintext);
@@ -103,7 +140,7 @@ export class AesGcmCipher implements ICipherAlgorithm {
   private validateKey(key: Uint8Array): void {
     if (key.length !== this.keySize) {
       throw new Error(
-        `Invalid key size: expected ${this.keySize}, got ${key.length}`
+        `Invalid key size: expected ${this.keySize}, got ${key.length}`,
       );
     }
   }
@@ -111,7 +148,7 @@ export class AesGcmCipher implements ICipherAlgorithm {
   private validateNonce(nonce: Uint8Array): void {
     if (nonce.length !== this.nonceSize) {
       throw new Error(
-        `Invalid nonce size: expected ${this.nonceSize}, got ${nonce.length}`
+        `Invalid nonce size: expected ${this.nonceSize}, got ${nonce.length}`,
       );
     }
   }
@@ -122,7 +159,7 @@ export class AesGcmCipher implements ICipherAlgorithm {
       toArrayBuffer(keyBytes),
       { name: "AES-GCM" },
       false,
-      ["encrypt", "decrypt"]
+      ["encrypt", "decrypt"],
     );
   }
 }
@@ -137,7 +174,7 @@ export async function aesGcmEncrypt(
   key: Uint8Array,
   nonce: Uint8Array,
   plaintext: Uint8Array,
-  aad?: Uint8Array
+  aad?: Uint8Array,
 ): Promise<Uint8Array> {
   return aesGcm.encrypt(key, nonce, plaintext, aad);
 }
@@ -149,7 +186,7 @@ export async function aesGcmDecrypt(
   key: Uint8Array,
   nonce: Uint8Array,
   ciphertext: Uint8Array,
-  aad?: Uint8Array
+  aad?: Uint8Array,
 ): Promise<Uint8Array> {
   return aesGcm.decrypt(key, nonce, ciphertext, aad);
 }

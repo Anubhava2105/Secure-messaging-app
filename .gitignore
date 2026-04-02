@@ -38,3 +38,9 @@ logs/
 
 # Typescript
 *.tsbuildinfo
+
+# Local SQLite runtime artifacts
+server/data/
+*.db
+*.db-shm
+*.db-wal

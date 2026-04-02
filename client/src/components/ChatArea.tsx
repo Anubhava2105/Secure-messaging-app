@@ -3,8 +3,8 @@
  * Displays messages and input for the active conversation.
  */
 
-import React, { useState } from "react";
-import { Shield, XCircle } from "lucide-react";
+import React, { useState, useRef, useCallback } from "react";
+import { Shield, XCircle, Check, CheckCheck } from "lucide-react";
 import type { Message, Contact } from "../types";
 
 interface ChatAreaProps {
@@ -13,6 +13,8 @@ interface ChatAreaProps {
   currentUserId: string | undefined;
   onSendMessage: (content: string) => Promise<void>;
   onOpenSecurityDetails: () => void;
+  isContactTyping?: boolean;
+  onTyping?: () => void;
 }
 
 const ChatArea: React.FC<ChatAreaProps> = ({
@@ -21,8 +23,25 @@ const ChatArea: React.FC<ChatAreaProps> = ({
   currentUserId,
   onSendMessage,
   onOpenSecurityDetails,
+  isContactTyping = false,
+  onTyping,
 }) => {
   const [inputText, setInputText] = useState("");
+  const lastTypingTime = useRef<number>(0);
+
+  const handleInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      setInputText(e.target.value);
+      if (onTyping) {
+        const now = Date.now();
+        if (now - lastTypingTime.current > 2000) {
+          onTyping();
+          lastTypingTime.current = now;
+        }
+      }
+    },
+    [onTyping],
+  );
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -33,10 +52,12 @@ const ChatArea: React.FC<ChatAreaProps> = ({
   };
 
   // Filter messages for this conversation
-  const activeMessages = messages.filter(
-    (m) =>
-      m.recipientId === activeContact.id || m.senderId === activeContact.id,
-  );
+  const activeMessages = messages
+    .filter(
+      (m) =>
+        m.recipientId === activeContact.id || m.senderId === activeContact.id
+    )
+    .sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id));
 
   return (
     <>
@@ -88,7 +109,16 @@ const ChatArea: React.FC<ChatAreaProps> = ({
                 })}
                 {msg.isPqcProtected && " • ✓"}
                 {msg.status === "sending" && " • Sending..."}
-                {msg.status === "error" && (
+                {msg.status === "sent" && msg.senderId === currentUserId && (
+                  <span> • <Check size={12} style={{ display: "inline", verticalAlign: "middle" }} /></span>
+                )}
+                {msg.status === "delivered" && msg.senderId === currentUserId && (
+                  <span> • <CheckCheck size={12} style={{ display: "inline", verticalAlign: "middle" }} /></span>
+                )}
+                {msg.status === "read" && msg.senderId === currentUserId && (
+                  <span> • <CheckCheck size={12} style={{ display: "inline", verticalAlign: "middle", color: "var(--success)" }} /></span>
+                )}
+                {msg.status === "error" && msg.senderId === currentUserId && (
                   <span>
                     {" "}
                     •{" "}
@@ -106,6 +136,14 @@ const ChatArea: React.FC<ChatAreaProps> = ({
             </div>
           ))
         )}
+        {isContactTyping && (
+          <div className="typing-indicator">
+            <span className="typing-dots">
+              <span>•</span><span>•</span><span>•</span>
+            </span>
+            {activeContact.username} is typing...
+          </div>
+        )}
       </section>
 
       <footer className="input-area">
@@ -114,7 +152,7 @@ const ChatArea: React.FC<ChatAreaProps> = ({
             type="text"
             placeholder="Type a secure message..."
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={handleInputChange}
           />
           <button
             type="submit"

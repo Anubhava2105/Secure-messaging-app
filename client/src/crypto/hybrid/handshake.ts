@@ -16,8 +16,8 @@ import {
 import { verifyPrekeySignature } from "../ecc/ecdsa";
 import { getMlKem768 } from "../pqc/mlkem";
 import { deriveSessionKeys } from "../kdf/hkdf";
-import { concatBytes, stringToBytes } from "../utils/encoding";
-import { generateRandomId } from "../utils/random";
+import { concatBytes, stringToBytes, bytesToHex } from "../utils/encoding";
+
 import type {
   PreKeyBundle,
   SessionKeys,
@@ -88,7 +88,7 @@ export async function initiateHandshake(
 ): Promise<{ message: HandshakeMessage; session: Session }> {
   // 1. Verify prekey signatures
   const eccPrekeyValid = await verifyPrekeySignature(
-    recipientBundle.identityKeyEcc, // Signing key = identity key for simplicity
+    recipientBundle.signingKeyPub,
     recipientBundle.signedPreKeyEcc.signature,
     recipientBundle.signedPreKeyEcc.publicKey,
     recipientBundle.signedPreKeyEcc.id,
@@ -100,7 +100,7 @@ export async function initiateHandshake(
   }
 
   const pqcPrekeyValid = await verifyPrekeySignature(
-    recipientBundle.identityKeyEcc,
+    recipientBundle.signingKeyPub,
     recipientBundle.signedPreKeyPqc.signature,
     recipientBundle.signedPreKeyPqc.publicKey,
     recipientBundle.signedPreKeyPqc.id,
@@ -179,7 +179,7 @@ export async function initiateHandshake(
 
   // 6. Create session
   const session: Session = {
-    sessionId: generateRandomId(),
+    sessionId: bytesToHex(sessionKeys.rootKey.slice(0, 8)),
     peerId: "recipient", // Would be actual user ID in practice
     keys: sessionKeys,
     sendChainKey: sessionKeys.rootKey.slice(),
@@ -277,7 +277,7 @@ export async function respondToHandshake(
 
   // 5. Create session (keys match initiator)
   const session: Session = {
-    sessionId: generateRandomId(),
+    sessionId: bytesToHex(sessionKeys.rootKey.slice(0, 8)),
     peerId: "initiator", // Would be actual user ID
     keys: sessionKeys,
     sendChainKey: sessionKeys.rootKey.slice(),

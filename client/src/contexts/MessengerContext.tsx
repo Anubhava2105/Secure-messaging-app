@@ -20,14 +20,23 @@ import {
   getPreKeyBundle,
 } from "../services/api";
 import {
-  getSession,
-  saveSession,
+  getSessionAsync,
+  deleteSession,
   clearAllSessions,
+  nextSendMessageKeyWithNumber,
+  nextReceiveMessageKeyAt,
 } from "../services/SessionManager";
-import { base64ToBytes } from "../crypto/utils/encoding";
+import { base64ToBytes, bytesToBase64 } from "../crypto/utils/encoding";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { encryptMessage, decryptMessage } from "../utils/messageEncryption";
-import { createDevSession } from "../utils/devSession";
+import {
+  ensureSession,
+  ensureSessionForOutgoing,
+  handleIncomingHandshake,
+  initiateHandshakeWithContact,
+} from "../services/HandshakeManager";
+import { getKeyStore } from "../crypto/storage/keystore";
+import type { StoredMessage } from "../crypto/storage/keystore";
 
 // ===== Context Types =====
 interface MessengerContextType {
@@ -38,10 +47,13 @@ interface MessengerContextType {
   sendMessage: (content: string) => Promise<void>;
   addContact: (username: string) => Promise<boolean>;
   connectionStatus: "connected" | "disconnected" | "connecting";
+  typingUsers: Set<string>;
+  sendTypingIndicator: () => void;
+  sendReadReceipt: (messageId: string, senderId: string) => void;
 }
 
 const MessengerContext = createContext<MessengerContextType | undefined>(
-  undefined,
+  undefined
 );
 
 export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
@@ -51,6 +63,13 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [messages, setMessages] = useState<Message[]>([]);
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
+  const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
+  const typingTimers = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(
+    new Map()
+  );
+  const pendingHandshakeByPeer = React.useRef<Map<string, string>>(new Map());
+  const retryCountByMessage = React.useRef<Map<string, number>>(new Map());
+  const sendRef = React.useRef<(data: string) => void>(() => {});
 
   // ===== Auto-add Contact Helper =====
   const autoAddContact = useCallback((senderId: string) => {
@@ -66,14 +85,26 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           publicKeyPqc: new Uint8Array(),
         };
 
-        // Async lookup of real username
+        // Persist and async lookup of real username
+        const store = getKeyStore();
+        store.storeContact({
+          id: senderId,
+          username: newContact.username,
+          status: "online",
+        });
+
         findUserById(senderId).then((userInfo) => {
           if (userInfo) {
             setContacts((prev) =>
               prev.map((c) =>
-                c.id === senderId ? { ...c, username: userInfo.username } : c,
-              ),
+                c.id === senderId ? { ...c, username: userInfo.username } : c
+              )
             );
+            store.storeContact({
+              id: senderId,
+              username: userInfo.username,
+              status: "online",
+            });
           }
         });
 
@@ -83,6 +114,76 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
     });
   }, []);
 
+  const transmitOutboundMessage = useCallback(
+    async (
+      content: string,
+      recipientId: string,
+      messageId: string,
+      timestamp: number,
+      forceSessionReset = false
+    ) => {
+      if (!user) {
+        throw new Error("Not authenticated");
+      }
+
+      if (forceSessionReset) {
+        await deleteSession(recipientId);
+        pendingHandshakeByPeer.current.delete(recipientId);
+      }
+
+      const hadExistingSession = !forceSessionReset
+        ? Boolean(await getSessionAsync(recipientId))
+        : false;
+
+      // Get or create session. If it's a new session, attach handshake payload
+      // to the first encrypted message for the peer to establish matching keys.
+      const sessionContext = await ensureSessionForOutgoing(
+        user.id,
+        recipientId
+      );
+      if (!sessionContext) {
+        throw new Error("Failed to establish secure session");
+      }
+
+      const handshakeData = hadExistingSession
+        ? undefined
+        : pendingHandshakeByPeer.current.get(recipientId) ??
+          sessionContext.handshakeData;
+
+      if (hadExistingSession) {
+        pendingHandshakeByPeer.current.delete(recipientId);
+      }
+
+      const {
+        messageKey: sendMessageKey,
+        messageNumber,
+        ratchetPublicKey,
+      } = await nextSendMessageKeyWithNumber(recipientId);
+      const encryptedBlob = await encryptMessage(content, sendMessageKey);
+
+      const relayMessage: WsOutgoingMessage = {
+        type: "send",
+        messageId,
+        recipientId,
+        encryptedBlob,
+        handshakeData,
+        ratchetKeyEcc: ratchetPublicKey
+          ? bytesToBase64(ratchetPublicKey)
+          : undefined,
+        messageNumber,
+        timestamp,
+      };
+
+      sendRef.current(JSON.stringify(relayMessage));
+
+      // Handshake payload is one-time. Once first message is sent, clear it.
+      if (handshakeData) {
+        pendingHandshakeByPeer.current.delete(recipientId);
+      }
+    },
+    [user]
+  );
+
   // ===== Incoming Message Handler =====
   const handleIncomingMessage = useCallback(
     async (msg: WsIncomingMessage) => {
@@ -90,30 +191,179 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
 
       if (msg.type === "error") {
         console.error("[Messenger] Server error:", msg.error);
+
+        // Peer-reported decrypt failure for our outbound message.
+        if (
+          user &&
+          msg.senderId &&
+          msg.senderId !== user.id &&
+          msg.messageId &&
+          msg.error === "decrypt-failed"
+        ) {
+          const failed = messages.find(
+            (m) =>
+              m.id === msg.messageId &&
+              m.senderId === user.id &&
+              m.recipientId === msg.senderId
+          );
+
+          if (!failed) {
+            return;
+          }
+
+          // Ignore stale peer errors for messages that already advanced
+          // to a terminal/success state (e.g. ACK arrived first).
+          if (failed.status !== "sending") {
+            return;
+          }
+
+          const currentRetries =
+            retryCountByMessage.current.get(failed.id) ?? 0;
+          if (currentRetries >= 1) {
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === failed.id && m.status === "sending"
+                  ? { ...m, status: "error" }
+                  : m
+              )
+            );
+            return;
+          }
+
+          retryCountByMessage.current.set(failed.id, currentRetries + 1);
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === failed.id && m.status === "sending"
+                ? { ...m, status: "sending" }
+                : m
+            )
+          );
+
+          try {
+            await transmitOutboundMessage(
+              failed.content,
+              failed.recipientId,
+              failed.id,
+              failed.timestamp,
+              true
+            );
+          } catch (err) {
+            console.error(
+              "[Messenger] Retry after decrypt-failed failed:",
+              err
+            );
+            setMessages((prev) =>
+              prev.map((m) =>
+                m.id === failed.id && m.status === "sending"
+                  ? { ...m, status: "error" }
+                  : m
+              )
+            );
+          }
+          return;
+        }
+
+        // If this error corresponds to an optimistic outbound message,
+        // mark it as failed instead of leaving it in "sending" state forever.
+        if (msg.messageId) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === msg.messageId && m.status === "sending"
+                ? { ...m, status: "error" }
+                : m
+            )
+          );
+        }
         return;
       }
 
       if (msg.type === "ack") {
+        retryCountByMessage.current.delete(msg.messageId);
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === msg.messageId ? { ...m, status: "sent" } : m,
-          ),
+            m.id === msg.messageId && (!user || m.senderId === user.id)
+              ? { ...m, status: "sent" }
+              : m
+          )
+        );
+        return;
+      }
+
+      // Handle typing indicator
+      if (msg.type === "typing" && msg.senderId) {
+        setTypingUsers((prev) => {
+          const next = new Set(prev);
+          next.add(msg.senderId!);
+          return next;
+        });
+        const existing = typingTimers.current.get(msg.senderId);
+        if (existing) clearTimeout(existing);
+        typingTimers.current.set(
+          msg.senderId,
+          setTimeout(() => {
+            setTypingUsers((prev) => {
+              const next = new Set(prev);
+              next.delete(msg.senderId!);
+              return next;
+            });
+          }, 3000)
+        );
+        return;
+      }
+
+      // Handle read receipt
+      if (msg.type === "read" && msg.messageId) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === msg.messageId ? { ...m, status: "read" } : m
+          )
+        );
+        return;
+      }
+
+      // Handle delivered receipt
+      if (msg.type === "delivered" && msg.messageId) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            m.id === msg.messageId ? { ...m, status: "delivered" } : m
+          )
+        );
+        return;
+      }
+
+      // Handle presence updates
+      if (msg.type === "presence" && msg.senderId && msg.status) {
+        setContacts((prev) =>
+          prev.map((c) =>
+            c.id === msg.senderId ? { ...c, status: msg.status! } : c
+          )
         );
         return;
       }
 
       // Handle incoming encrypted message
       if (msg.type === "send" && msg.senderId && msg.encryptedBlob) {
-        let session = getSession(msg.senderId);
+        if (user && msg.senderId === user.id) {
+          // Ignore self-loop frames defensively.
+          return;
+        }
 
-        // Auto-create session for unknown sender (DEV mode)
-        if (!session && user) {
-          console.log(
-            "[Messenger] Auto-creating session for sender:",
+        // Handle handshake messages (first message from a new peer)
+        if (msg.handshakeData && user) {
+          await handleIncomingHandshake(
+            user.id,
             msg.senderId,
+            msg.handshakeData
           );
-          session = await createDevSession(user.id, msg.senderId);
-          saveSession(msg.senderId, session);
+          // If peer already established the shared session, any locally pending
+          // outbound handshake for the same peer is stale and must be discarded.
+          pendingHandshakeByPeer.current.delete(msg.senderId);
+        }
+
+        // Get or create session
+        let session = await getSessionAsync(msg.senderId);
+        if (!session && user) {
+          session = await ensureSession(user.id, msg.senderId);
         }
 
         // Auto-add sender as contact
@@ -127,7 +377,15 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         }
 
         try {
-          const decrypted = await decryptMessage(msg.encryptedBlob, session);
+          const recvMessageKey = await nextReceiveMessageKeyAt(
+            msg.senderId,
+            msg.messageNumber,
+            msg.ratchetKeyEcc ? base64ToBytes(msg.ratchetKeyEcc) : undefined
+          );
+          const decrypted = await decryptMessage(
+            msg.encryptedBlob,
+            recvMessageKey
+          );
           const newMessage: Message = {
             id: msg.messageId || generateRandomId(),
             senderId: msg.senderId,
@@ -137,13 +395,47 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
             isPqcProtected: true,
             status: "delivered",
           };
-          setMessages((prev) => [...prev, newMessage]);
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === newMessage.id)) {
+              return prev;
+            }
+            return [...prev, newMessage];
+          });
+
+          // Persist to IndexedDB
+          const store = getKeyStore();
+          const storedMsg: StoredMessage = {
+            ...newMessage,
+            peerId: msg.senderId,
+          };
+          store.storeMessage(storedMsg).catch(console.error);
+
+          // Auto-send read receipt if user is currently viewing this conversation.
+          if (activeContact?.id === msg.senderId) {
+            const receipt: WsOutgoingMessage = {
+              type: "read",
+              messageId: newMessage.id,
+              recipientId: msg.senderId,
+              timestamp: Date.now(),
+            };
+            sendRef.current(JSON.stringify(receipt));
+          }
         } catch (err) {
           console.error("[Messenger] Decryption failed:", err);
+
+          // Notify sender to refresh their session and retry exactly once.
+          const failureNotice: WsOutgoingMessage = {
+            type: "error",
+            messageId: msg.messageId || generateRandomId(),
+            recipientId: msg.senderId,
+            error: "decrypt-failed",
+            timestamp: Date.now(),
+          };
+          sendRef.current(JSON.stringify(failureNotice));
         }
       }
     },
-    [user, autoAddContact],
+    [user, messages, autoAddContact, activeContact, transmitOutboundMessage]
   );
 
   // ===== WebSocket Connection =====
@@ -153,17 +445,72 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
     autoConnect: isAuthenticated,
   });
 
+  useEffect(() => {
+    sendRef.current = send;
+  }, [send]);
+
+  // Load contacts/messages from IndexedDB on mount
+  useEffect(() => {
+    if (!isAuthenticated || !user) return;
+    const store = getKeyStore();
+    store.getAllContacts().then((storedContacts) => {
+      const sanitizedContacts = storedContacts.filter((c) => c.id !== user.id);
+
+      // Cleanup legacy/invalid self-contact entries from prior builds.
+      if (sanitizedContacts.length !== storedContacts.length) {
+        store.deleteContact(user.id).catch(console.error);
+      }
+
+      if (sanitizedContacts.length > 0) {
+        setContacts(
+          sanitizedContacts.map((c) => ({
+            id: c.id,
+            username: c.username,
+            status: c.status,
+            publicKeyEcc: new Uint8Array(),
+            publicKeyPqc: new Uint8Array(),
+          }))
+        );
+      }
+    });
+    store.getAllMessages().then((storedMessages) => {
+      if (storedMessages.length > 0) {
+        setMessages(
+          storedMessages.map((m) => ({
+            id: m.id,
+            senderId: m.senderId,
+            recipientId: m.recipientId,
+            content: m.content,
+            timestamp: m.timestamp,
+            isPqcProtected: m.isPqcProtected,
+            status: m.status === "sending" ? "error" : m.status,
+          }))
+        );
+      }
+    });
+  }, [isAuthenticated, user]);
+
   // Cleanup sessions on unmount
   useEffect(() => {
     return () => {
-      clearAllSessions();
+      clearAllSessions().catch(console.error);
     };
   }, []);
 
   // ===== Send Message =====
   const sendMessage = useCallback(
     async (content: string) => {
-      if (!activeContact || !user) return;
+      if (!activeContact || !user || !content.trim()) return;
+
+      if (activeContact.id === user.id) {
+        console.warn("[Messenger] Blocking self-message");
+        return;
+      }
+
+      if (connectionStatus !== "connected") {
+        console.warn("[Messenger] Cannot send while disconnected");
+        return;
+      }
 
       const messageId = generateRandomId();
       const timestamp = Date.now();
@@ -180,34 +527,30 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       };
       setMessages((prev) => [...prev, newMessage]);
 
-      // Get or create session
-      let session = getSession(activeContact.id);
-      if (!session) {
-        console.warn("[Messenger] Creating dev-mode session");
-        session = await createDevSession(user.id, activeContact.id);
-        saveSession(activeContact.id, session);
-      }
-
+      // Persist to IndexedDB
+      const store = getKeyStore();
+      const storedMsg: StoredMessage = {
+        ...newMessage,
+        peerId: activeContact.id,
+      };
+      store.storeMessage(storedMsg).catch(console.error);
       try {
-        const encryptedBlob = await encryptMessage(content, session);
-
-        const relayMessage: WsOutgoingMessage = {
-          type: "send",
+        retryCountByMessage.current.set(messageId, 0);
+        await transmitOutboundMessage(
+          content,
+          activeContact.id,
           messageId,
-          recipientId: activeContact.id,
-          encryptedBlob,
-          timestamp,
-        };
-
-        send(JSON.stringify(relayMessage));
+          timestamp
+        );
       } catch (err) {
         console.error("[Messenger] Failed to send message:", err);
+
         setMessages((prev) =>
-          prev.map((m) => (m.id === messageId ? { ...m, status: "error" } : m)),
+          prev.map((m) => (m.id === messageId ? { ...m, status: "error" } : m))
         );
       }
     },
-    [activeContact, user, send],
+    [activeContact, user, connectionStatus, transmitOutboundMessage]
   );
 
   // ===== Add Contact =====
@@ -220,6 +563,11 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       const userInfo = await findUserByUsername(username);
       if (!userInfo) {
         console.warn("[Messenger] User not found:", username);
+        return false;
+      }
+
+      if (user && userInfo.userId === user.id) {
+        console.warn("[Messenger] Cannot add yourself as contact");
         return false;
       }
 
@@ -243,10 +591,45 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       };
 
       setContacts((prev) => [...prev, newContact]);
+
+      // Persist contact to IndexedDB
+      const store = getKeyStore();
+      store
+        .storeContact({
+          id: newContact.id,
+          username: newContact.username,
+          status: "offline",
+        })
+        .catch(console.error);
+
       console.log("[Messenger] Contact added:", username);
       return true;
     },
-    [contacts],
+    [contacts, user]
+  );
+
+  // ===== Typing Indicator =====
+  const sendTypingIndicator = useCallback(() => {
+    if (!activeContact) return;
+    const msg: WsOutgoingMessage = {
+      type: "typing",
+      messageId: "",
+      recipientId: activeContact.id,
+    };
+    send(JSON.stringify(msg));
+  }, [activeContact, send]);
+
+  // ===== Read Receipt =====
+  const sendReadReceipt = useCallback(
+    (messageId: string, senderId: string) => {
+      const msg: WsOutgoingMessage = {
+        type: "read",
+        messageId,
+        recipientId: senderId,
+      };
+      send(JSON.stringify(msg));
+    },
+    [send]
   );
 
   return (
@@ -259,6 +642,9 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         sendMessage,
         addContact,
         connectionStatus,
+        typingUsers,
+        sendTypingIndicator,
+        sendReadReceipt,
       }}
     >
       {children}

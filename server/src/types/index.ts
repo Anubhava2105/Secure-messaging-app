@@ -91,6 +91,14 @@ export interface WsClientMessage {
   recipientId?: string;
   /** Base64 encoded encrypted blob */
   encryptedBlob?: string;
+  /** Optional serialized handshake payload for first-message session establishment */
+  handshakeData?: string;
+  /** Optional error payload for peer notifications */
+  error?: string;
+  /** Optional sender DH-ratchet public key (Base64 P-384 raw key) */
+  ratchetKeyEcc?: string;
+  /** Optional sender-chain message number */
+  messageNumber?: number;
   /** Optional timestamp for read receipts */
   timestamp?: number;
 }
@@ -102,6 +110,12 @@ export interface WsServerMessage {
   senderId?: string;
   /** Base64 encoded encrypted blob */
   encryptedBlob?: string;
+  /** Optional serialized handshake payload */
+  handshakeData?: string;
+  /** Optional sender DH-ratchet public key (Base64 P-384 raw key) */
+  ratchetKeyEcc?: string;
+  /** Optional sender-chain message number */
+  messageNumber?: number;
   timestamp: number;
   error?: string;
 }

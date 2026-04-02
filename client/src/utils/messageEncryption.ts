@@ -13,7 +13,6 @@ import {
 } from "../crypto/utils/encoding";
 import { getRandomBytes } from "../crypto/utils/random";
 import { NONCE_SIZE } from "../constants";
-import type { Session } from "../crypto/hybrid/handshake";
 
 /**
  * Encrypt a message using the session key.
@@ -25,15 +24,11 @@ import type { Session } from "../crypto/hybrid/handshake";
  */
 export async function encryptMessage(
   content: string,
-  session: Session,
+  messageKey: Uint8Array
 ): Promise<string> {
   const nonce = getRandomBytes(NONCE_SIZE);
   const plaintext = stringToBytes(content);
-  const ciphertext = await aesGcmEncrypt(
-    session.keys.encryptionKey,
-    nonce,
-    plaintext,
-  );
+  const ciphertext = await aesGcmEncrypt(messageKey, nonce, plaintext);
   const combined = concatBytes(nonce, ciphertext);
   return bytesToBase64(combined);
 }
@@ -47,15 +42,11 @@ export async function encryptMessage(
  */
 export async function decryptMessage(
   encryptedBlob: string,
-  session: Session,
+  messageKey: Uint8Array
 ): Promise<string> {
   const combined = base64ToBytes(encryptedBlob);
   const nonce = combined.slice(0, NONCE_SIZE);
   const ciphertext = combined.slice(NONCE_SIZE);
-  const plaintext = await aesGcmDecrypt(
-    session.keys.encryptionKey,
-    nonce,
-    ciphertext,
-  );
+  const plaintext = await aesGcmDecrypt(messageKey, nonce, ciphertext);
   return bytesToString(plaintext);
 }

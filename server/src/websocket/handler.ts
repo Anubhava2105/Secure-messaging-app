@@ -21,51 +21,46 @@ const connectedUsers = new Map<string, WebSocket>();
 /** Map of socket -> userId (reverse lookup) */
 const socketToUser = new Map<WebSocket, string>();
 
+/** Per-user message timestamps for lightweight WebSocket abuse protection */
+const messageRateWindowMs = 10_000;
+const maxMessagesPerWindow = 120;
+const userMessageTimestamps = new Map<string, number[]>();
+
+function isRateLimited(userId: string): boolean {
+  const now = Date.now();
+  const timestamps = userMessageTimestamps.get(userId) ?? [];
+  const recent = timestamps.filter((ts) => now - ts < messageRateWindowMs);
+
+  if (recent.length >= maxMessagesPerWindow) {
+    userMessageTimestamps.set(userId, recent);
+    return true;
+  }
+
+  recent.push(now);
+  userMessageTimestamps.set(userId, recent);
+  return false;
+}
+
 /**
  * Main WebSocket connection handler.
  */
 export async function messageHandler(
   socket: WebSocket,
-  request: FastifyRequest,
+  request: FastifyRequest
 ): Promise<void> {
-  // TODO: Extract user ID from auth token in query params
-  const userId = extractUserId(request);
+  // Authenticate via JWT token in query params
+  const userId = await extractUserId(request);
 
   if (!userId) {
     socket.close(4001, "Authentication required");
     return;
   }
 
-  // Check if user exists, auto-register for development
-  let userExists = await store.userExists(userId);
+  // Verify user exists in store
+  const userExists = await store.userExists(userId);
   if (!userExists) {
-    // DEVELOPMENT: Auto-register user for testing
-    // SECURITY: Remove this in production
-    console.log(`[DEV] Auto-registering user: ${userId}`);
-    await store.createUser({
-      id: userId,
-      username: `User-${userId.slice(0, 8)}`,
-      passwordHash: "",
-      identityKeyEccPub: "",
-      identityKeyPqcPub: "",
-      signingKeyPub: "",
-      signedPrekeyEcc: {
-        id: 0,
-        publicKey: "",
-        signature: "",
-        createdAt: Date.now(),
-      },
-      signedPrekeyPqc: {
-        id: 0,
-        publicKey: "",
-        signature: "",
-        createdAt: Date.now(),
-      },
-      oneTimePrekeyEcc: [],
-      createdAt: Date.now(),
-      lastSeen: Date.now(),
-    });
-    userExists = true;
+    socket.close(4002, "User not found — register first");
+    return;
   }
 
   // Register connection
@@ -80,9 +75,17 @@ export async function messageHandler(
   // Deliver any pending messages
   await deliverPendingMessages(userId, socket);
 
+  // Broadcast presence: online
+  broadcastPresence(userId, "online");
+
   // Handle incoming messages
   socket.on("message", async (data: Buffer) => {
     try {
+      if (isRateLimited(userId)) {
+        sendError(socket, "rate-limit", "Too many messages. Slow down.");
+        return;
+      }
+
       const message = JSON.parse(data.toString()) as WsClientMessage;
       await handleMessage(userId, socket, message);
     } catch (error) {
@@ -94,7 +97,9 @@ export async function messageHandler(
   socket.on("close", () => {
     connectedUsers.delete(userId);
     socketToUser.delete(socket);
+    userMessageTimestamps.delete(userId);
     console.log(`User disconnected: ${userId}`);
+    broadcastPresence(userId, "offline");
   });
 
   socket.on("error", (error: Error) => {
@@ -108,7 +113,7 @@ export async function messageHandler(
 async function handleMessage(
   senderId: string,
   senderSocket: WebSocket,
-  message: WsClientMessage,
+  message: WsClientMessage
 ): Promise<void> {
   switch (message.type) {
     case "send" as WsMessageType:
@@ -130,6 +135,11 @@ async function handleMessage(
       await handleTypingIndicator(senderId, message);
       break;
 
+    case "error" as WsMessageType:
+      // Peer error notification - forward to recipient
+      await handlePeerError(senderId, message);
+      break;
+
     default:
       sendError(senderSocket, message.messageId, "Unknown message type");
   }
@@ -146,12 +156,32 @@ async function handleMessage(
 async function handleSendMessage(
   senderId: string,
   senderSocket: WebSocket,
-  message: WsClientMessage,
+  message: WsClientMessage
 ): Promise<void> {
-  const { recipientId, encryptedBlob, messageId } = message;
+  const {
+    recipientId,
+    encryptedBlob,
+    handshakeData,
+    messageId,
+    messageNumber,
+  } = message;
+  const { ratchetKeyEcc } = message;
 
   if (!recipientId || !encryptedBlob || !messageId) {
     sendError(senderSocket, messageId ?? "unknown", "Missing required fields");
+    return;
+  }
+
+  if (recipientId === senderId) {
+    sendError(senderSocket, messageId, "Cannot send message to yourself");
+    return;
+  }
+
+  if (
+    messageNumber !== undefined &&
+    (!Number.isInteger(messageNumber) || messageNumber < 0)
+  ) {
+    sendError(senderSocket, messageId, "Invalid messageNumber");
     return;
   }
 
@@ -174,8 +204,7 @@ async function handleSendMessage(
   console.log(`  MessageID: ${messageId}`);
   console.log(`  Timestamp: ${new Date(timestamp).toISOString()}`);
   console.log("-".repeat(60));
-  console.log("  ENCRYPTED BLOB (first 100 chars):");
-  console.log(`  ${encryptedBlob.substring(0, 100)}...`);
+  console.log(`  Ciphertext bytes (base64 chars): ${encryptedBlob.length}`);
   console.log("-".repeat(60));
   console.log("  [!] SERVER CANNOT READ THIS CONTENT");
   console.log("  [OK] End-to-end encrypted with AES-GCM-256");
@@ -191,6 +220,9 @@ async function handleSendMessage(
       messageId,
       senderId,
       encryptedBlob,
+      handshakeData,
+      ratchetKeyEcc,
+      messageNumber,
       timestamp,
     };
 
@@ -198,7 +230,14 @@ async function handleSendMessage(
     console.log(`  -> Delivered to online recipient`);
   } else {
     // Recipient offline - store for later delivery
-    await store.storePendingMessage(recipientId, senderId, encryptedBlob);
+    await store.storePendingMessage(
+      recipientId,
+      senderId,
+      encryptedBlob,
+      handshakeData,
+      ratchetKeyEcc,
+      messageNumber
+    );
     console.log(`  -> Stored for offline recipient`);
   }
 
@@ -216,7 +255,7 @@ async function handleSendMessage(
  */
 async function handleAck(
   _senderId: string,
-  _message: WsClientMessage,
+  _message: WsClientMessage
 ): Promise<void> {
   // Log or track delivery state
   // In production, update message delivery status in database
@@ -227,7 +266,7 @@ async function handleAck(
  */
 async function handleReadReceipt(
   readerId: string,
-  message: WsClientMessage,
+  message: WsClientMessage
 ): Promise<void> {
   const { recipientId, messageId, timestamp } = message;
 
@@ -250,7 +289,7 @@ async function handleReadReceipt(
  */
 async function handleTypingIndicator(
   typerId: string,
-  message: WsClientMessage,
+  message: WsClientMessage
 ): Promise<void> {
   const { recipientId } = message;
 
@@ -269,11 +308,34 @@ async function handleTypingIndicator(
 }
 
 /**
+ * Forward peer-side client errors (e.g., decrypt failure) to the intended recipient.
+ */
+async function handlePeerError(
+  senderId: string,
+  message: WsClientMessage
+): Promise<void> {
+  const { recipientId, messageId, error } = message;
+  if (!recipientId || !messageId) return;
+
+  const recipientSocket = connectedUsers.get(recipientId);
+  if (recipientSocket && recipientSocket.readyState === 1) {
+    const peerError: WsServerMessage = {
+      type: "error" as WsMessageType,
+      messageId,
+      senderId,
+      error: error ?? "peer-error",
+      timestamp: Date.now(),
+    };
+    recipientSocket.send(JSON.stringify(peerError));
+  }
+}
+
+/**
  * Deliver pending messages when user comes online.
  */
 async function deliverPendingMessages(
   userId: string,
-  socket: WebSocket,
+  socket: WebSocket
 ): Promise<void> {
   const pending = await store.getPendingMessages(userId);
 
@@ -283,6 +345,9 @@ async function deliverPendingMessages(
       messageId: `pending-${msg.timestamp}`,
       senderId: msg.senderId,
       encryptedBlob: msg.blob,
+      handshakeData: msg.handshakeData,
+      ratchetKeyEcc: msg.ratchetKeyEcc,
+      messageNumber: msg.messageNumber,
       timestamp: msg.timestamp,
     };
     socket.send(JSON.stringify(serverMessage));
@@ -306,35 +371,69 @@ function sendError(socket: WebSocket, messageId: string, error: string): void {
   socket.send(JSON.stringify(errorMsg));
 }
 
+function getTokenFromSecWebSocketProtocol(
+  headerValue: string | string[] | undefined
+): string | null {
+  if (!headerValue) return null;
+
+  const raw = Array.isArray(headerValue) ? headerValue.join(",") : headerValue;
+  const protocols = raw
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+
+  const authProtocol = protocols.find((protocol) =>
+    protocol.startsWith("auth.")
+  );
+  if (!authProtocol) return null;
+
+  const token = authProtocol.slice("auth.".length).trim();
+  return token.length > 0 ? token : null;
+}
+
 /**
- * Extract user ID from request (auth token).
+ * Extract and verify user ID from WebSocket auth context.
+ * Preferred: `Sec-WebSocket-Protocol: auth.<jwt>`
+ * Fallback (legacy): `?token=<jwt>` query parameter.
  */
-function extractUserId(request: FastifyRequest): string | null {
+async function extractUserId(request: FastifyRequest): Promise<string | null> {
   const query = request.query as Record<string, string>;
+  const protocolHeader =
+    request.headers["sec-websocket-protocol"] ??
+    request.raw.headers["sec-websocket-protocol"];
 
-  // DEVELOPMENT: Accept userId directly from query param
-  // SECURITY: Remove this in production and use proper JWT
-  if (query.userId) {
-    console.log(`[DEV] User connected with userId: ${query.userId}`);
-    return query.userId;
-  }
-
-  // Production: Validate JWT token
-  const token = query.token;
+  const token = getTokenFromSecWebSocketProtocol(protocolHeader) ?? query.token;
   if (!token) return null;
 
-  // Placeholder: extract user ID from token
-  // In production, validate JWT and extract claims
-  if (token.startsWith("placeholder-token-")) {
-    return token.replace("placeholder-token-", "");
+  try {
+    const decoded = request.server.jwt.verify<{
+      userId: string;
+      username: string;
+    }>(token);
+    return decoded.userId;
+  } catch {
+    console.warn("Invalid JWT token on WebSocket connection");
+    return null;
   }
+}
 
-  // Fallback: use token as-is for simple testing
-  if (token.length > 0) {
-    return token;
+/**
+ * Broadcast a user's presence status to all other connected users.
+ */
+function broadcastPresence(userId: string, status: "online" | "offline"): void {
+  const presenceMsg = JSON.stringify({
+    type: "presence",
+    messageId: "",
+    senderId: userId,
+    status,
+    timestamp: Date.now(),
+  });
+
+  for (const [otherUserId, otherSocket] of connectedUsers) {
+    if (otherUserId !== userId && otherSocket.readyState === 1) {
+      otherSocket.send(presenceMsg);
+    }
   }
-
-  return null;
 }
 
 /**

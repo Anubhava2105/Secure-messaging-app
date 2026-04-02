@@ -7,7 +7,11 @@ export type WsMessageType =
   | "ack"
   | "error"
   | "handshake"
-  | "encrypted";
+  | "encrypted"
+  | "typing"
+  | "read"
+  | "delivered"
+  | "presence";
 
 export interface WsOutgoingMessage {
   type: WsMessageType;
@@ -15,6 +19,11 @@ export interface WsOutgoingMessage {
   recipientId: string;
   encryptedBlob?: string; // Base64
   handshakeData?: string; // Base64 serialized handshake message
+  error?: string;
+  /** Optional sender DH-ratchet public key (Base64 P-384 raw key) */
+  ratchetKeyEcc?: string;
+  /** Sender-chain message number used for out-of-order key recovery */
+  messageNumber?: number;
   timestamp?: number;
 }
 
@@ -24,6 +33,12 @@ export interface WsIncomingMessage {
   senderId?: string;
   encryptedBlob?: string;
   handshakeData?: string;
+  /** Optional sender DH-ratchet public key (Base64 P-384 raw key) */
+  ratchetKeyEcc?: string;
+  /** Sender-chain message number */
+  messageNumber?: number;
   timestamp?: number;
   error?: string;
+  /** For presence: online/offline */
+  status?: "online" | "offline";
 }

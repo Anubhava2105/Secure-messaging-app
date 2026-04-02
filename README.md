@@ -18,7 +18,7 @@ secure-messaging-app/
 │   └── src/
 │       └── crypto/         # Cryptographic modules
 │           ├── ecc/        # P-384 ECDH/ECDSA via WebCrypto
-│           ├── pqc/        # ML-KEM-768 via liboqs-wasm
+│           ├── pqc/        # ML-KEM-768 via mlkem package
 │           ├── kdf/        # HKDF-SHA-384
 │           ├── symmetric/  # AES-GCM-256
 │           ├── hybrid/     # Hybrid X3DH handshake
@@ -115,15 +115,11 @@ npm run electron
 
 ## ⚠️ Security Notes
 
-1. **ML-KEM-768 WASM**: The PQC module requires `liboqs-wasm` or equivalent. Install separately:
+1. **ML-KEM-768**: PQC uses the `mlkem` package (pure TypeScript FIPS 203 implementation).
 
-   ```bash
-   cd client && npm install @aspect/mlkem-wasm
-   ```
+2. **JWT Authentication**: API and WebSocket auth use signed JWTs.
 
-2. **No Production Keys**: The current implementation uses placeholder tokens. Implement proper JWT authentication for production.
-
-3. **TLS Required**: Always use WSS (WebSocket Secure) in production.
+3. **TLS Required**: For production, set `VITE_WS_URL` / `VITE_API_BASE_URL` to your HTTPS/WSS endpoints.
 
 4. **Prekey Replenishment**: Monitor one-time prekey counts and replenish when low.
 
@@ -132,7 +128,7 @@ npm run electron
 - [x] Hybrid key exchange (ECC + PQC)
 - [x] Zero-knowledge relay server
 - [x] Secure Electron configuration
-- [ ] Double Ratchet for per-message forward secrecy
+- [x] Double Ratchet for per-message forward secrecy
 - [ ] Group messaging
 - [ ] Voice/video calls
 

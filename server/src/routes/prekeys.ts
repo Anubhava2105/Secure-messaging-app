@@ -6,8 +6,25 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
+import { z } from "zod";
 import { store } from "../store/index.js";
 import type { PreKeyBundleResponse, OneTimePreKeyDto } from "../types/index.js";
+
+const userIdParamsSchema = z.object({
+  userId: z.string().uuid(),
+});
+
+const prekeyUploadSchema = z.object({
+  oneTimePrekeys: z
+    .array(
+      z.object({
+        id: z.number().int().nonnegative(),
+        publicKey: z.string().min(1),
+      })
+    )
+    .min(1)
+    .max(100),
+});
 
 export async function prekeyRoutes(fastify: FastifyInstance): Promise<void> {
   /**
@@ -24,7 +41,14 @@ export async function prekeyRoutes(fastify: FastifyInstance): Promise<void> {
       request: FastifyRequest<{ Params: { userId: string } }>,
       reply: FastifyReply
     ) => {
-      const { userId } = request.params;
+      const parsedParams = userIdParamsSchema.safeParse(request.params);
+      if (!parsedParams.success) {
+        return reply.code(400).send({
+          error: "Invalid userId",
+          details: parsedParams.error.issues,
+        });
+      }
+      const { userId } = parsedParams.data;
 
       const user = await store.getUserById(userId);
       if (!user) {
@@ -64,48 +88,49 @@ export async function prekeyRoutes(fastify: FastifyInstance): Promise<void> {
 
   /**
    * Upload additional one-time prekeys.
-   * Client should call this when prekey count is low.
+   * Requires JWT authentication.
    */
   fastify.post<{
     Body: { oneTimePrekeys: OneTimePreKeyDto[] };
-  }>("/prekeys", async (request, reply) => {
-    // TODO: Add authentication to get user ID from token
-    const userId = "placeholder-user-id"; // Get from auth token
+  }>(
+    "/prekeys",
+    { onRequest: [fastify.authenticate] },
+    async (request, reply) => {
+      const userId = request.user.userId;
 
-    const { oneTimePrekeys } = request.body;
+      const parsed = prekeyUploadSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          error: "Invalid prekey payload",
+          details: parsed.error.issues,
+        });
+      }
+      const { oneTimePrekeys } = parsed.data;
 
-    if (!oneTimePrekeys || !Array.isArray(oneTimePrekeys)) {
-      return reply.code(400).send({ error: "oneTimePrekeys array required" });
+      await store.addOneTimePrekeys(userId, oneTimePrekeys);
+
+      const count = await store.getOneTimePrekeyCount(userId);
+      fastify.log.info(
+        { userId, added: oneTimePrekeys.length, total: count },
+        "Prekeys added"
+      );
+
+      return { added: oneTimePrekeys.length, total: count };
     }
-
-    if (oneTimePrekeys.length === 0) {
-      return reply.code(400).send({ error: "At least one prekey required" });
-    }
-
-    if (oneTimePrekeys.length > 100) {
-      return reply.code(400).send({ error: "Maximum 100 prekeys per request" });
-    }
-
-    await store.addOneTimePrekeys(userId, oneTimePrekeys);
-
-    const count = await store.getOneTimePrekeyCount(userId);
-    fastify.log.info(
-      { userId, added: oneTimePrekeys.length, total: count },
-      "Prekeys added"
-    );
-
-    return { added: oneTimePrekeys.length, total: count };
-  });
+  );
 
   /**
    * Get current prekey count.
-   * Client uses this to determine when to upload more.
+   * Requires JWT authentication.
    */
-  fastify.get("/prekeys/count", async (_request, _reply) => {
-    // TODO: Add authentication to get user ID from token
-    const userId = "placeholder-user-id"; // Get from auth token
+  fastify.get(
+    "/prekeys/count",
+    { onRequest: [fastify.authenticate] },
+    async (request, _reply) => {
+      const userId = request.user.userId;
 
-    const count = await store.getOneTimePrekeyCount(userId);
-    return { count };
-  });
+      const count = await store.getOneTimePrekeyCount(userId);
+      return { count };
+    }
+  );
 }

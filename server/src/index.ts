@@ -11,9 +11,25 @@
 import Fastify from "fastify";
 import fastifyWebSocket from "@fastify/websocket";
 import fastifyCors from "@fastify/cors";
+import fastifyJwt from "@fastify/jwt";
+import fastifyRateLimit from "@fastify/rate-limit";
 import { prekeyRoutes } from "./routes/prekeys.js";
 import { userRoutes } from "./routes/users.js";
 import { messageHandler } from "./websocket/handler.js";
+
+// JWT secret — use env var in production
+const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-in-production";
+const isProduction = process.env.NODE_ENV === "production";
+const corsOrigins = (process.env.CORS_ORIGINS ?? "")
+  .split(",")
+  .map((value) => value.trim())
+  .filter(Boolean);
+
+if (isProduction && JWT_SECRET === "dev-secret-change-in-production") {
+  throw new Error(
+    "JWT_SECRET must be set in production; refusing to start with default secret"
+  );
+}
 
 const server = Fastify({
   logger: {
@@ -25,7 +41,7 @@ const server = Fastify({
 
 // Register plugins
 await server.register(fastifyCors, {
-  origin: true, // Configure appropriately for production
+  origin: corsOrigins.length > 0 ? corsOrigins : isProduction ? false : true,
   credentials: true,
 });
 
@@ -33,6 +49,27 @@ await server.register(fastifyWebSocket, {
   options: {
     maxPayload: 1024 * 1024, // 1MB max message size
   },
+});
+
+// JWT plugin
+await server.register(fastifyJwt, {
+  secret: JWT_SECRET,
+});
+
+// Basic API rate limiting
+await server.register(fastifyRateLimit, {
+  global: true,
+  max: 120,
+  timeWindow: "1 minute",
+});
+
+// Reusable auth decorator
+server.decorate("authenticate", async function (request: any, reply: any) {
+  try {
+    await request.jwtVerify();
+  } catch (err) {
+    reply.code(401).send({ error: "Unauthorized" });
+  }
 });
 
 // Health check endpoint
@@ -65,4 +102,4 @@ const start = async (): Promise<void> => {
 
 start();
 
-export { server };
+export { server, JWT_SECRET };

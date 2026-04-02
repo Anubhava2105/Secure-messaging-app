@@ -4,6 +4,7 @@
  */
 
 import React, { useState } from "react";
+import { useAuth } from "../contexts/AuthContext";
 
 interface AddContactModalProps {
   isOpen: boolean;
@@ -16,6 +17,7 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
   onClose,
   onAdd,
 }) => {
+  const { user } = useAuth();
   const [username, setUsername] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -25,6 +27,11 @@ const AddContactModal: React.FC<AddContactModalProps> = ({
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!username.trim()) return;
+
+    if (user && username.trim().toLowerCase() === user.username.toLowerCase()) {
+      setError("You cannot add yourself as a contact.");
+      return;
+    }
 
     setIsLoading(true);
     setError(null);

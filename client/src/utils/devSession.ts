@@ -1,11 +1,10 @@
 /**
- * DEV-mode session creation utilities.
- * Creates deterministic shared keys for development/testing.
+ * Deprecated development-session helpers.
  *
- * SECURITY: In production, this should be replaced with proper X3DH handshake.
+ * SECURITY: deterministic shared-key fallbacks are disabled.
+ * This module is kept temporarily only to avoid accidental import breakage.
  */
 
-import { generateRandomId } from "../crypto/utils/random";
 import type { Session } from "../crypto/hybrid/handshake";
 
 /**
@@ -17,18 +16,10 @@ import type { Session } from "../crypto/hybrid/handshake";
  * @returns 32-byte shared key
  */
 export async function deriveSharedDevKey(
-  userId1: string,
-  userId2: string,
+  _userId1: string,
+  _userId2: string
 ): Promise<Uint8Array> {
-  // Sort IDs to ensure both parties derive the same key
-  const sortedIds = [userId1, userId2].sort();
-  const combined = sortedIds.join(":");
-  const encoder = new TextEncoder();
-  const hash = await crypto.subtle.digest(
-    "SHA-256",
-    encoder.encode(combined + ":dev-key"),
-  );
-  return new Uint8Array(hash);
+  throw new Error("dev session fallback is disabled");
 }
 
 /**
@@ -39,22 +30,8 @@ export async function deriveSharedDevKey(
  * @returns Session object with shared keys
  */
 export async function createDevSession(
-  myUserId: string,
-  peerId: string,
+  _myUserId: string,
+  _peerId: string
 ): Promise<Session> {
-  const sharedKey = await deriveSharedDevKey(myUserId, peerId);
-
-  return {
-    sessionId: generateRandomId(),
-    peerId,
-    keys: {
-      rootKey: sharedKey,
-      encryptionKey: sharedKey,
-      macKey: sharedKey,
-    },
-    sendChainKey: sharedKey,
-    recvChainKey: sharedKey,
-    messageCounter: 0n,
-    createdAt: Date.now(),
-  };
+  throw new Error("dev session fallback is disabled");
 }

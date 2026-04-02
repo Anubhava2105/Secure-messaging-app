@@ -74,6 +74,9 @@ export interface PreKeyBundle {
   /** PQC identity public key */
   identityKeyPqc: Uint8Array;
 
+  /** ECDSA signing public key */
+  signingKeyPub: Uint8Array;
+
   /** Signed ECC prekey */
   signedPreKeyEcc: SignedPreKey;
 

@@ -25,6 +25,8 @@ const AppContent = () => {
     sendMessage,
     addContact,
     connectionStatus,
+    typingUsers,
+    sendTypingIndicator,
   } = useMessenger();
 
   const [isSecurityModalOpen, setSecurityModalOpen] = useState(false);
@@ -63,6 +65,8 @@ const AppContent = () => {
               currentUserId={user?.id}
               onSendMessage={sendMessage}
               onOpenSecurityDetails={() => setSecurityModalOpen(true)}
+              isContactTyping={typingUsers.has(activeContact.id)}
+              onTyping={sendTypingIndicator}
             />
           ) : (
             <EmptyChatState onAddContact={() => setAddContactModalOpen(true)} />

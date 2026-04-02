@@ -33,7 +33,6 @@ import {
   ensureSession,
   ensureSessionForOutgoing,
   handleIncomingHandshake,
-  initiateHandshakeWithContact,
 } from "../services/HandshakeManager";
 import { getKeyStore } from "../crypto/storage/keystore";
 import type { StoredMessage } from "../crypto/storage/keystore";
@@ -652,6 +651,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useMessenger = () => {
   const context = useContext(MessengerContext);
   if (context === undefined) {

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * WebSocket connection hook for browser and Electron.
  * Handles connection lifecycle and message routing.
  */

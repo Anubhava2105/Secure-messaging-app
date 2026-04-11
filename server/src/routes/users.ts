@@ -58,7 +58,21 @@ const LOGIN_LOCK_MS = Math.max(
   Number.parseInt(process.env.LOGIN_LOCK_MS ?? "300000", 10) || 300_000
 );
 
+/** Maximum tracked throttle keys to prevent memory exhaustion DoS */
+const MAX_TRACKED_KEYS = 50_000;
+
 const loginAttempts = new Map<string, LoginAttemptState>();
+
+// Periodic cleanup of stale throttle entries (every 5 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, state] of loginAttempts) {
+    // Remove entries that are well past their window AND no longer locked
+    if (now - state.windowStart > LOGIN_WINDOW_MS * 2 && state.lockedUntil < now) {
+      loginAttempts.delete(key);
+    }
+  }
+}, 5 * 60 * 1000).unref();
 
 function attemptKey(username: string, ip: string): string {
   return `${username.toLowerCase()}|${ip}`;
@@ -67,6 +81,11 @@ function attemptKey(username: string, ip: string): string {
 function getAttemptState(key: string, now: number): LoginAttemptState {
   const existing = loginAttempts.get(key);
   if (!existing) {
+    // Evict oldest entry if at capacity
+    if (loginAttempts.size >= MAX_TRACKED_KEYS) {
+      const firstKey = loginAttempts.keys().next().value;
+      if (firstKey !== undefined) loginAttempts.delete(firstKey);
+    }
     const initial: LoginAttemptState = {
       fails: 0,
       windowStart: now,
@@ -87,7 +106,13 @@ function getAttemptState(key: string, now: number): LoginAttemptState {
 function secureStringEqual(a: string, b: string): boolean {
   const left = Buffer.from(a);
   const right = Buffer.from(b);
-  if (left.length !== right.length) return false;
+  // Pad shorter buffer to avoid length leak from timingSafeEqual throw
+  if (left.length !== right.length) {
+    const padded = Buffer.alloc(left.length);
+    right.copy(padded, 0, 0, Math.min(right.length, left.length));
+    timingSafeEqual(left, padded);
+    return false;
+  }
   return timingSafeEqual(left, right);
 }
 

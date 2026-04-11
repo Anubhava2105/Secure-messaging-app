@@ -1,0 +1,39 @@
+\begin{center}
+	{\Large \textbf{Appendix A}}-\vspace*{0.5 cm}
+	{\Large \textbf{Sample Code}}
+	
+\end{center}
+\begin{lstlisting}[language=TypeScript]
+/**
+ * Secure Messaging App - Cryptographic Engine
+ * Hybrid X3DH Shared Secret Derivation
+ */
+import { hkdf } from '@panva/hkdf';
+import { mlkem768 } from 'mlkem';
+
+export async function deriveHybridKeys(
+    eccShared1: Uint8Array,
+    eccShared2: Uint8Array,
+    eccShared3: Uint8Array,
+    pqcShared: Uint8Array
+): Promise<Uint8Array> {
+    // Concatenate classical and post-quantum shared secrets 
+    const inputKeyMaterial = new Uint8Array([
+        ...eccShared1,
+        ...eccShared2,
+        ...eccShared3,
+        ...pqcShared
+    ]);
+    
+    // Extract and Expand using HKDF (SHA-384) to generate AES-GCM key
+    const derivedKey = await hkdf(
+        'SHA-384',
+        inputKeyMaterial,
+        new Uint8Array(0), // Default salt
+        'Secure-Messaging-App-V1', // Application context info
+        32 // 256 bits needed for AES-256
+    );
+    
+    return derivedKey;
+}
+\end{lstlisting}

@@ -29,8 +29,8 @@ const PREKEY_BATCH_SIZE = 10;
 const PREKEY_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 interface AuthContextType extends AuthState {
-  register: (username: string) => Promise<void>;
-  login: (username: string) => Promise<boolean>;
+  register: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
 }
 
@@ -224,7 +224,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   }, []);
 
   // ===== Register =====
-  const register = async (username: string) => {
+  const register = async (username: string, password: string) => {
     setState((s) => ({ ...s, isLoading: true, error: null }));
 
     try {
@@ -257,8 +257,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         timestamp
       );
 
-      // Create password hash
-      const passwordHash = await createPasswordHash(normalizedUsername);
+      // Create password hash from actual user-supplied password
+      const passwordHash = await createPasswordHash(normalizedUsername, password);
 
       // Register with server
       console.log("[Auth] Registering with server...");
@@ -345,7 +345,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   // ===== Login =====
-  const login = async (username: string): Promise<boolean> => {
+  const login = async (username: string, password: string): Promise<boolean> => {
     setState((s) => ({ ...s, isLoading: true, error: null }));
 
     try {
@@ -359,7 +359,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         return false;
       }
 
-      const passwordHash = await createPasswordHash(normalizedUsername);
+      const passwordHash = await createPasswordHash(normalizedUsername, password);
       const response = await apiLoginUser(normalizedUsername, passwordHash);
 
       if (!response) {

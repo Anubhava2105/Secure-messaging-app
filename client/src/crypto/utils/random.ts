@@ -85,15 +85,12 @@ export function generateRandomId(length: number = 16): string {
  * @returns true if arrays are equal, false otherwise
  */
 export function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) {
-    return false;
-  }
-
-  let result = 0;
-  for (let i = 0; i < a.length; i++) {
+  // XOR lengths into result — avoids early-return timing leak on length mismatch.
+  let result = a.length ^ b.length;
+  const len = Math.min(a.length, b.length);
+  for (let i = 0; i < len; i++) {
     result |= a[i] ^ b[i];
   }
-
   return result === 0;
 }
 

@@ -1,0 +1,32 @@
+\chapter{\MakeUppercase{Project Implementation}}
+
+\section{Overview}
+\paragraph{}
+The implementation phase of the Secure Messaging App translated the stringent zero-knowledge and post-quantum architectural constraints into a functional, performant codebase. The implementation was split between a robust Node.js backend using Fastify, and a secure Electron-wrapped React client. All communication logic was meticulously authored in TypeScript to ensure type safety across cryptographic exchanges.
+
+\section{Cryptographic Implementation}
+\paragraph{}
+The core focus of the system is a Hybrid Key Exchange that runs strictly on the client. The implementation is achieved through a combination of browser-native APIs and specialized cryptographic libraries:
+
+\begin{itemize}
+    \item \textbf{Classical Cryptography (ECC):} The standard \texttt{window.crypto.subtle} (WebCrypto API) is heavily utilized. It was selected specifically because it executes highly optimized, native-level code in the browser, providing significant performance benefits when generating NIST P-384 keys or computing ECDH shared secrets.
+    \item \textbf{Post-Quantum Cryptography (PQC):} Because browsers do not yet natively support post-quantum standards, the application implements the \texttt{mlkem} package via npm. This provides a pure TypeScript implementation of FIPS 203 (ML-KEM-768 / Kyber), enabling lattice-based encapsulation and decapsulation entirely within the client's memory space.
+    \item \textbf{Symmetric Encryption:} Once the Hybrid X3DH key agreement distills the classical and post-quantum parameters into a single master shared secret via HKDF, AES-GCM-256 (via WebCrypto) is deployed to encrypt the actual message buffers before they leave the client.
+\end{itemize}
+
+\section{Backend Infrastructure Implementation}
+\paragraph{}
+The server acts as a high-throughput, blind relay mechanism. It was implemented using \texttt{Fastify}, chosen over Express due to its superior request-handling speed and streamlined asynchronous architecture.
+\begin{itemize}
+    \item \textbf{RESTful API:} Implemented to handle initial onboarding. The endpoints validate JSON Web Tokens (JWT) for authentication and manage the uploading and fetching of identity prekey bundles.
+    \item \textbf{WebSocket Server:} Utilizing \texttt{@fastify/websocket}, a persistent connection handles the active, real-time message relay. The server simply identifies the receiver's socket ID and pushes the opaque, encrypted binary blobs seamlessly without inspecting the contents.
+\end{itemize}
+
+\section{Frontend and Desktop Implementation}
+\paragraph{}
+The user-facing platform emphasizes a seamless interface while tightly guarding local data. 
+\begin{itemize}
+    \item \textbf{React UI:} The user interface is driven by React functional components and custom hooks (e.g., \texttt{useCrypto}, \texttt{useAuth}). It was scaffolded using Vite to enable extremely fast hot-module replacement and optimized production builds. 
+    \item \textbf{Local Storage:} Given the zero-knowledge requirement, message history and private key management operate via IndexedDB. This prevents arbitrary scripts from trivially scraping the document model while allowing persistent session resumption when the user goes offline.
+    \item \textbf{Electron Hardening:} The entire Vite application is embedded inside Electron. Crucially, the implementation disables Node Integration within the renderer process and strictly enforcing Context Isolation. The \texttt{preload.ts} script acts as a finite bridge, tightly regulating inter-process communication (IPC) to shield against Remote Code Execution (RCE) and broader network vulnerabilities.
+\end{itemize}

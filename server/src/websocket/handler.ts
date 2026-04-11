@@ -26,6 +26,9 @@ const messageRateWindowMs = 10_000;
 const maxMessagesPerWindow = 120;
 const userMessageTimestamps = new Map<string, number[]>();
 
+/** Gate verbose logging to development only — production must be zero-knowledge */
+const isDev = process.env.NODE_ENV !== "production";
+
 function isRateLimited(userId: string): boolean {
   const now = Date.now();
   const timestamps = userMessageTimestamps.get(userId) ?? [];
@@ -67,7 +70,7 @@ export async function messageHandler(
   connectedUsers.set(userId, socket);
   socketToUser.set(socket, userId);
 
-  console.log(`User connected: ${userId}`);
+  if (isDev) console.log(`User connected: ${userId}`);
 
   // Update last seen
   await store.updateLastSeen(userId);
@@ -98,7 +101,7 @@ export async function messageHandler(
     connectedUsers.delete(userId);
     socketToUser.delete(socket);
     userMessageTimestamps.delete(userId);
-    console.log(`User disconnected: ${userId}`);
+    if (isDev) console.log(`User disconnected: ${userId}`);
     broadcastPresence(userId, "offline");
   });
 
@@ -194,21 +197,22 @@ async function handleSendMessage(
 
   const timestamp = Date.now();
 
-  // ===== ZERO-KNOWLEDGE RELAY LOGGING =====
-  // This demonstrates that the server only sees encrypted data
-  console.log("\n" + "=".repeat(60));
-  console.log("MESSAGE RELAY (Zero-Knowledge)");
-  console.log("=".repeat(60));
-  console.log(`  From:      ${senderId.substring(0, 8)}...`);
-  console.log(`  To:        ${recipientId.substring(0, 8)}...`);
-  console.log(`  MessageID: ${messageId}`);
-  console.log(`  Timestamp: ${new Date(timestamp).toISOString()}`);
-  console.log("-".repeat(60));
-  console.log(`  Ciphertext bytes (base64 chars): ${encryptedBlob.length}`);
-  console.log("-".repeat(60));
-  console.log("  [!] SERVER CANNOT READ THIS CONTENT");
-  console.log("  [OK] End-to-end encrypted with AES-GCM-256");
-  console.log("=".repeat(60) + "\n");
+  // ===== ZERO-KNOWLEDGE RELAY LOGGING (dev-only) =====
+  if (isDev) {
+    console.log("\n" + "=".repeat(60));
+    console.log("MESSAGE RELAY (Zero-Knowledge)");
+    console.log("=".repeat(60));
+    console.log(`  From:      ${senderId.substring(0, 8)}...`);
+    console.log(`  To:        ${recipientId.substring(0, 8)}...`);
+    console.log(`  MessageID: ${messageId}`);
+    console.log(`  Timestamp: ${new Date(timestamp).toISOString()}`);
+    console.log("-".repeat(60));
+    console.log(`  Ciphertext bytes (base64 chars): ${encryptedBlob.length}`);
+    console.log("-".repeat(60));
+    console.log("  [!] SERVER CANNOT READ THIS CONTENT");
+    console.log("  [OK] End-to-end encrypted with AES-GCM-256");
+    console.log("=".repeat(60) + "\n");
+  }
 
   // Check if recipient is online
   const recipientSocket = connectedUsers.get(recipientId);
@@ -227,7 +231,7 @@ async function handleSendMessage(
     };
 
     recipientSocket.send(JSON.stringify(serverMessage));
-    console.log(`  -> Delivered to online recipient`);
+    if (isDev) console.log(`  -> Delivered to online recipient`);
   } else {
     // Recipient offline - store for later delivery
     await store.storePendingMessage(
@@ -238,7 +242,7 @@ async function handleSendMessage(
       ratchetKeyEcc,
       messageNumber
     );
-    console.log(`  -> Stored for offline recipient`);
+    if (isDev) console.log(`  -> Stored for offline recipient`);
   }
 
   // Send ACK to sender
@@ -354,7 +358,7 @@ async function deliverPendingMessages(
   }
 
   if (pending.length > 0) {
-    console.log(`Delivered ${pending.length} pending messages to ${userId}`);
+    if (isDev) console.log(`Delivered ${pending.length} pending messages to ${userId}`);
   }
 }
 

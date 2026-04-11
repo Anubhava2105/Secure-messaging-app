@@ -1,0 +1,53 @@
+\chapter{\MakeUppercase{Methodology and Testing}}
+
+\section{Methodology}
+\paragraph{}
+The development of the Secure Messaging App followed an iterative and modular Agile methodology. Given the inherent complexity of integrating Post-Quantum Cryptography (PQC) alongside classical algorithms, a phased rollout was implemented. 
+
+The methodology began with establishing the underlying cryptographic primitives in isolation. The application architecture was intentionally decoupled so that the core mathematical operations (e.g., ML-KEM-768 encapsulation, NIST P-384 ECDH key agreement, and AES-GCM encryption) could be rigorously evaluated outside of the user interface. Once the standalone cryptographic engine was stabilized, development progressed to the network routing phase, implementing the Fastify server and WebSocket listeners. The final phases involved constructing the React interface and packaging the application securely within the Electron framework.
+
+This modular separation ensured that any vulnerabilities or performance bottlenecks could be isolated and addressed at the foundational level before they propagated into complex UI-driven state interactions.
+
+\section{Testing Strategy}
+\paragraph{}
+To ensure a hardened, Zero-Knowledge cryptographic environment, a comprehensive and multi-layered testing strategy was adopted:
+
+\begin{itemize}
+    \item \textbf{Unit Testing:} Individual cryptographic functions were tested rigorously against known vectors. This included validating that the HKDF algorithm correctly expanded and extracted shared secrets, and that the implementation of FIPS 203 (ML-KEM) behaved consistently.
+    \item \textbf{Integration Testing:} The Hybrid X3DH (Extended Triple Diffie-Hellman) protocol was simulated locally between two virtual clients. This ensured that the combination of four classical ECDH calculations and one PQC encapsulation successfully derived identical session keys on both logical ends before introducing network latency.
+    \item \textbf{End-to-End (E2E) Testing:} The complete application lifecycle was tested by deploying the Fastify server and connecting multiple Electron clients over WSS. This verified the real-time WebSocket broadcasting capabilities, prekey replenishment logic, and offline message queueing.
+    \item \textbf{Security Auditing:} Dedicated security checks were performed to confirm the Zero-Knowledge constraint. Payload interception tools were utilized between the client and server to guarantee that all messages in transit were strictly AES-GCM-256 ciphertexts alongside authentication tags, completely opaque to the backend server. Additionally, Electron's Context Security Policies (CSP) and IPC constraints were reviewed to ensure immunity against typical web vulnerabilities.
+\end{itemize}
+
+\section{Visualizing Output}
+\paragraph{}
+The metrics derived from testing the latency and performance overhead of running PQC alongside ECC are plotted in the system analytics. Below are standard visualizations demonstrating typical performance graphing mechanisms.
+
+Example figures
+\begin{figure}[h]
+    \centering
+    \includegraphics[width=0.5\linewidth]{images/sample-graph.pdf}
+    \caption{Graph with straight line}
+    \label{fig:universe}
+\end{figure}
+\begin{figure}[h!]
+    \centering
+    % Left image (a)
+    \begin{subfigure}[b]{0.45\linewidth}
+        \centering
+        \includegraphics[width=\textwidth]{images/sample-graph.pdf} % replace with your image filename
+        \caption{Graph-1}
+        \label{fig:fruitsA}
+    \end{subfigure}
+    \hfill
+    % Right image (b)
+    \begin{subfigure}[b]{0.45\linewidth}
+        \centering
+        \includegraphics[width=\textwidth]{images/sample-graph.pdf} % replace with your image filename
+        \caption{Graph-2}
+        \label{fig:fruitsC}
+    \end{subfigure}
+    
+    \caption{Two figures arranged side-by-side}
+    \label{fig:common_fruits}
+\end{figure}

@@ -1,0 +1,12 @@
+\begin{center}
+	\Large{\textbf{EXECUTIVE SUMMARY}}	
+\end{center}
+\vspace{1em}
+\normalsize
+\hspace{1cm} The rapid advancement of quantum computing fundamentally threatens modern digital communication architectures. Specifically, the "Harvest Now, Decrypt Later" (HNDL) vulnerability exposes sensitive, classically encrypted traffic to future decryption once large-scale quantum computers become operational. This project introduces a Secure Messaging Application engineered to preemptively neutralize this threat by implementing a robust, post-quantum resilient framework.
+
+At the core of the system is an innovative Hybrid Key Exchange that blends standard Elliptic Curve Cryptography (NIST P-384) with cutting-edge, lattice-based Post-Quantum Cryptography (ML-KEM-768 / FIPS 203). By processing both classical and post-quantum shared secrets simultaneously through an HMAC-based Key Derivation Function (HKDF), the application ensures that a compromise in either algorithm will not jeopardize the resulting session keys. End-to-end symmetric payload encryption is then seamlessly executed using AES-GCM-256.
+
+To preserve absolute user privacy, the infrastructure enforces a strict Zero-Knowledge trust paradigm. The system's centralized relay server, built on Node.js and Fastify, operates entirely blind. It functions solely as a high-throughput WebSocket router, distributing opaque binary ciphertexts without ever touching plaintext or private decryption keys. Furthermore, the user interface guarantees client-side security by operating within a hardened Electron desktop wrapper, utilizing secure IndexedDB APIs for local, offline session storage.
+
+Rigorous integration and end-to-end testing verified the successful generation and exchange of post-quantum keys across multiple clients with minimal, acceptable latency overhead. Ultimately, this project demonstrates that integrating mathematically heavy, standardized post-quantum cryptography into modern, cross-platform consumer applications is highly effective and feasible without degrading the real-time user experience.

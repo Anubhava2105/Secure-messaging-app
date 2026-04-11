@@ -1,0 +1,48 @@
+\chapter{\MakeUppercase{Project Description and Goals}}
+\section{Literature review}
+A literature review is a structured and critical examination of existing research, studies, theories, and publications related to a specific topic or problem. In a computer science project report, it summarizes and analyzes what other researchers and developers have already done in the same or closely related area.
+
+It is not just a collection of summaries. Instead, it demonstrates your understanding of the field, identifies patterns or trends, compares different approaches, and highlights gaps that your project aims to address.
+
+A literature review is a text of a scholarly paper, which contains the current knowledge including substantive findings, as well as theoretical and methodological contributions to a particular topic. Literature reviews are secondary sources, and do not report new or 
+original experimental work. Most often associated with  academic-oriented literature, such reviews are found in academic journals, and are not to be confused with book reviews that may also appear in the same publication. Literature reviews are a basis for research in nearly every academic field (Waldron, 2008b). 
+
+A narrow-scope literature review may be included as part of a peer-reviewed journal article  presenting new research, serving to situate the current study within the body of the relevant 
+literature and to provide context for the reader. In such a case, the review usually precedes the methodology and results sections of the work. Producing a literature review may also be part of graduate and post-graduate student work, including in the preparation of a thesis, 
+dissertation, or a journal article. Literature reviews are also common in a research proposal or prospectus (the document that is approved before a student formally begins a dissertation or thesis) (Doan et al., 2002; Duzdevich et al., 2014; Ganesh et al., 2016).
+
+The main types of literature reviews are: evaluative, exploratory, and instrumental (Duzdevich et al., 2014; Neil and David, 2016). 
+A fourth type, the systematic review, is often classified separately, but is essentially a literature review focused on a research question, trying to identify, appraise, select and synthesize all high-quality research evidence and arguments relevant to that question. A meta-analysis is typically a systematic review using statistical methods to effectively 
+combine the data used on all selected studies to produce a more reliable result \cite{duzdevich2014dna}, \cite{mohanaprasad2017optimized}, \cite{gilbarg1977elliptic}, \cite{haykin2004kalman}, \cite{haykin2005cognitive}, \cite{knuth1986computers}
+
+\section{Research Gap}
+\paragraph{}
+Existing encrypted communication systems, such as WhatsApp and traditional implementations of the Signal Protocol, rely on classical cryptographic algorithms like Elliptic Curve Cryptography (ECC) and RSA. While these systems provide robust security against conventional attacks, they fail to address the imminent threat of quantum computing. Specifically, large-scale quantum computers running Shor's algorithm will be able to break discrete logarithm and integer factorization problems efficiently. 
+
+This introduces a critical limitation in previous systems: vulnerabilities to the "Harvest Now, Decrypt Later" (HNDL) attack. Current implementations often lack native integration of Post-Quantum Cryptography (PQC), leaving past and present communications susceptible to future decryption. Additionally, many systems suffer from scalability and usability issues when attempting to integrate larger PQC keys and ciphertexts into existing real-time infrastructure. Missing features in current widely deployed platforms include a hybrid cryptographic protocol that safely blends established classical security (e.g., NIST P-384) with new, standardized quantum-resistant algorithms (e.g., ML-KEM-768/Kyber) without severely impacting transaction speed and performance.
+
+\section{Objectives}
+\paragraph{}
+The primary objective of this project is to design, implement, and evaluate a secure messaging application that is strictly resistant to both classical and quantum cryptographic attacks. The specific goals include:
+\begin{itemize}
+	\item \textbf{Develop a Hybrid Key Exchange:} Combine classical ECC (NIST P-384) with post-quantum ML-KEM-768 (Kyber) using an X3DH-based protocol to ensure forward secrecy and quantum resistance.
+	\item \textbf{Implement a Zero-Knowledge Architecture:} Construct a relay server capable of routing real-time encrypted messages via WebSockets without having access to encryption keys or plaintext messages.
+	\item \textbf{Ensure End-to-End Encryption:} Utilize AES-GCM-256 authenticated encryption along with robust key derivation via HKDF.
+	\item \textbf{Create a Secure Cross-Platform Client:} Develop a user-friendly frontend using React and Vite, securely wrapped within an Electron desktop application featuring strict context isolation and sandboxing.
+	\item \textbf{Enable Secure Persistent Data Storage:} Use IndexedDB for secure handling and storage of cryptographic keys and local message history.
+\end{itemize}
+
+\section{Problem statement}
+\paragraph{}
+The fundamental problem being addressed is the impending obsolescence of current public-key cryptography used to secure end-to-end encrypted digital communications. With the theoretical viability of quantum computing threatening to compromise existing standards (ECC and RSA), sensitive communication architectures must be proactively upgraded. The challenge lies in creating a practical, high-performance messaging system that completely integrates standardized Post-Quantum Cryptography (FIPS 203/ML-KEM) in a hybrid scheme, successfully defeating the "Harvest Now, Decrypt Later" paradigm while maintaining a strict zero-knowledge trust model.
+
+\section{Project plan}
+\paragraph{}
+To realize the objectives of the proposed system, the project execution follows a structured, multi-phase development plan:
+\begin{itemize}
+	\item \textbf{Phase 1: Cryptographic Foundation:} Implementation of core cryptographic primitives using WebCrypto (for ECC and AES-GCM) and the \textit{mlkem} package for PQC. Setting up the secure IndexedDB persistent key storage mechanism.
+	\item \textbf{Phase 2: Protocol Design:} Development of the Hybrid X3DH handshake protocol combining classical prekeys and quantum-resistant shared secrets via robust Key Derivation Functions (HKDF) to establish secure session keys.
+	\item \textbf{Phase 3: Backend Infrastructure:} Construction of the Fastify-based Node.js relay server to manage user authentication (JWT), securely handle one-time cryptographic prekeys, and route WebSocket messages under a zero-knowledge trust model.
+	\item \textbf{Phase 4: Client Interface Definition:} Building the React user interface, wiring the messaging components, creating user session logic, and connecting components to the securely stored cryptographic local state.
+	\item \textbf{Phase 5: Desktop Integration and Security Hardening:} Wrapping the web application within the Electron framework. Implementing hardened, sandboxed main and preload processes, enforcing strict Content Security Policies (CSP), and conducting continuous final security checks.
+\end{itemize}

@@ -1,0 +1,18 @@
+\chapter{\MakeUppercase{Conclusion and Further enhancements}}
+
+\section{Conclusion}
+\paragraph{}
+The Secure Messaging App project was initiated to address the pressing vulnerability of modern digital communications to emerging quantum computing capabilities. By designing an application explicitly resistant to "Harvest Now, Decrypt Later" (HNDL) attacks, the project successfully demonstrated that next-generation privacy standards can be achieved using current web technologies and open-source infrastructure.
+
+The core achievement of the implementation is the fully functional Hybrid Key Exchange. By weaving classical resilience (NIST P-384) with standardized Post-Quantum Cryptography (ML-KEM-768/FIPS 203), the application guarantees that a compromise in either individual algorithm does not jeopardize the master session key. Furthermore, the robust decoupling of the React/Electron client from the Fastify routing server successfully maintained a strict Zero-Knowledge trust environment. Offline local storage via IndexedDB ensured that the cryptographic state never left the user's secure perimeter. Ultimately, the project proves that integrating heavy, lattice-based cryptography into consumer-facing software is entirely feasible without significantly compromising real-time performance or usability.
+
+\section{Further Enhancements}
+\paragraph{}
+While the application effectively secures one-to-one communication, the domain of applied post-quantum cryptography remains vast. Several enhancements could be pursued in future iterations of the software to expand its capabilities:
+
+\begin{itemize}
+    \item \textbf{Post-Quantum Digital Signatures (ML-DSA):} The current implementation relies on classical ECDSA or EdDSA for signing prekeys and verifying initial identity bundles. A natural enhancement would be upgrading to ML-DSA (Dilithium) to ensure that the authenticity layer, not just the confidentiality layer, is quantum-resistant.
+    \item \textbf{Group Messaging Mechanics:} Extending the Double Ratchet and Hybrid Key Exchange to support scalable group chats. This requires complex architectural expansions, such as modifying the traditional Sender Keys protocol to accommodate large post-quantum ciphertext dimensions securely.
+    \item \textbf{Voice and Video Calls:} Integrating WebRTC for real-time audio and video streaming. This would require wrapping the initial DTLS handshake using the established post-quantum session keys derived out-of-band by the application.
+    \item \textbf{Native Mobile Applications:} Porting the React interface to React Native. To handle the computational overhead of ML-KEM on lower-end mobile CPUs efficiently, future work could involve writing native C/C++ bridges (JNI for Android, Objective-C/Swift for iOS) rather than relying solely on pure TypeScript or WASM implementations in the mobile JavaScript engine.
+\end{itemize}

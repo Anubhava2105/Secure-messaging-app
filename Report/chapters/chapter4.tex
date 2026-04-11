@@ -1,0 +1,22 @@
+\chapter{\MakeUppercase{System Design}}
+
+\section{System Architecture}
+\paragraph{}
+The architecture of the Secure Messaging App is designed around a zero-knowledge trust model, partitioned fundamentally into a robust client-side frontend and a minimal, "blind" server-side backend. This separation ensures that sensitive cryptographic operations remain exclusively on hardware controlled by the user.
+
+\begin{itemize}
+    \item \textbf{High-Level Client Architecture:} The client is structured as a modern web application built using React and Vite. It is hosted within an Electron container that provides an isolated bridge between the web interface and native desktop capabilities. The client architecture is further subdivided into the Presentation Layer (React UI), the State Management Layer, the Cryptographic Engine (WebCrypto and \textit{mlkem}), and the Persistence Layer (IndexedDB).
+    \item \textbf{High-Level Server Architecture:} The backend utilizes Fastify running on Node.js to prioritize high-speed I/O. It consists of a RESTful HTTP API layer responsible for initial user registration, authentication, and the distribution of prekey bundles. Concurrently, a WebSocket layer maintains persistent connections to clients for real-time message broadcasting.
+    \item \textbf{Network Communication:} All communication between the client and server is transmitted over TLS (HTTPS/WSS) to safeguard against Man-in-the-Middle (MitM) attacks during public key exchanges before the end-to-end encrypted session is fully established. 
+\end{itemize}
+
+\section{Detailed Design}
+\paragraph{}
+The detailed design of the system outlines the specific modules responsible for achieving the post-quantum resistant objectives. 
+
+\begin{itemize}
+    \item \textbf{Cryptographic Module:} This is the core component of the system. It handles the Hybrid X3DH handshake. When two clients communicate, their cryptographic modules independently compute multiple classical ECDH shared secrets (using NIST P-384) while encapsulating and decapsulating an ML-KEM-768 shared secret. These varying degrees of entropy are fed into an HKDF (Key Derivation Function) using SHA-384 to distill the final shared session keys securely. From there, a Double Ratchet mechanism ensures per-message forward and backward secrecy.
+    \item \textbf{Message processing Pipeline:} Before transmission, a plaintext message is converted into a binary buffer, encrypted using AES-GCM-256 with the derived symmetric session key, and appended with an authentication tag. This resulting ciphertext payload is transmitted to the Fastify server over WebSockets, which simply identifies the destination client ID and pushes the payload without interpreting the contents.
+    \item \textbf{Storage and Persistence Module:} The server-side utilizes an in-memory or SQLite database to persistently hold un-retrieved offline messages temporarily and manage user public key bundles (identity keys, signed prekeys, and one-time prekeys). Conversely, the client's local storage relies purely on IndexedDB. This secure local database tracks the client's own private keys, active session states matching remote peers, and the localized unencrypted message history, ensuring it never leaves the device.
+    \item \textbf{Electron Hardening Design:} The system employs strict isolation between the main Electron process (Node.js environment) and the renderer process (React environment). IPC (Inter-Process Communication) is highly restricted through a constrained `preload.ts` script. Strict Content Security Policies (CSP) are enforced to neutralize Remote Code Execution (RCE) and Cross-Site Scripting (XSS) threats.
+\end{itemize}

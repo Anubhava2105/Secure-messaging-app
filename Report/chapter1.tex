@@ -1,0 +1,37 @@
+\chapter{\MakeUppercase{Introduction}}
+\justifying
+\section{Background}
+The proliferation of digital communication platforms has made information security a critical concern in modern society. While contemporary messaging systems rely heavily on classical cryptographic algorithms, such as Elliptic Curve Cryptography (ECC) and RSA, the rapid advancement of quantum computing introduces an unprecedented threat known as "Harvest Now, Decrypt Later" (HNDL). In an HNDL attack, adversaries intercept and store encrypted data today with the intention of decrypting it once large-scale quantum computers become available. 
+
+Existing solutions like traditional end-to-end encrypted applications provide robust defense against classical attacks but are vulnerable to Shor's algorithm, which can efficiently break the underlying discrete logarithm and integer factorization problems. This limitation necessitates a transition to Post-Quantum Cryptography (PQC). 
+
+Relevant concepts in this domain include Hybrid Key Exchange mechanisms (such as X3DH), Key Derivation Functions (like HKDF), and Authenticated Encryption with Associated Data (AEAD) via AES-GCM. The theoretical foundations of this project revolve around designing a Zero-Knowledge architecture, ensuring perfect forward secrecy, and maintaining cryptographic integrity. The proposed system is therefore needed to proactively defend against quantum threats by combining classical ECC (NIST P-384) with post-quantum ML-KEM-768 (Kyber), resulting in a future-proof secure messaging application.
+
+\paragraph{Use of Acronym in the text:}The acronym Artificial Intelligence can be included as short \ac{ai} using latex command \verb|\ac{ai}|  in the text. Similarly the URL \ac{url} can be used as \verb|\ac{url}| in the text. Machine learning \ac{ml} can be used as \verb|\ac{ml}| in the text. Use of other acronyms \ac{2g}, \ac{3g}, \ac{csma} are  defined as \verb|\ac{2g}, \ac{3g}, \ac{csma}|, respectively.
+
+\subsection{The Quantum Threat to Cryptography}
+\paragraph{} The fundamental premise of the project is ensuring resilience against quantum adversaries. Quantum computers operating at sufficient scale will break widely used public-key cryptography. To mitigate this scenario, the application leverages algorithms specifically designed to be resistant to quantum attacks alongside classical ones, significantly raising the security threshold.
+
+\subsection{Zero-Knowledge Architecture}
+\paragraph{} Another foundational component of the system is its zero-knowledge relay server. By ensuring all cryptographic operations, key generation, and decryption take place strictly on the client side, the server only routes encrypted binary blobs. Consequently, a server compromise would not result in plaintext leakage.
+
+\section{Motivation}
+The primary motivation for this project stems from the severe problem significance of the HNDL threat, which endangers vast amounts of sensitive communication globally. 
+
+From a practical perspective, there is an urgent need to build user-friendly applications that implement cutting-edge cryptography transparently, without negatively affecting user experience. Academically, integrating the recently standardized ML-KEM (FIPS 203) alongside established classical ECC models within modern web technology offers valuable insights into performance and implementational challenges.
+
+Technically, building a cohesive system utilizing React, Electron, Fastify, and WebCrypto creates an opportunity to engineer robust, cross-platform software. The innovation aspect lies in the concrete application of a Hybrid X3DH key agreement protocol, providing a defense-in-depth approach where the compromise of a single algorithm does not break the overall security.
+
+\section{Scope of the project}
+The scope of the project defines the specific limits within which the messaging system operates:
+
+\begin{itemize}
+	\item \textbf{Functional Scope:} The system supports core messaging capabilities including one-to-one secure text communication, key exchange initiation, real-time message delivery via WebSockets, and user session handling. Extended features such as group messaging, voice calls, and video streaming are explicitly excluded.
+	\item \textbf{Non-Functional Scope:} The system emphasizes high security, forward secrecy, post-quantum resistance, and a zero-knowledge trust model. Performance must remain optimal despite the introduction of larger post-quantum keys and ciphertexts.
+	\item \textbf{Technical Scope:} The build targets a React-based frontend embedded in an Electron desktop wrapper, interfacing with a Node.js (Fastify) backend. Persistent local storage relies on IndexedDB, and SQLite is used for persistent server state where required.
+	\item \textbf{Project Boundaries:}
+		\begin{itemize}
+			\item \textit{Assumptions:} The underlying operating system and client hardware are assumed to be secure and free from malware (e.g., keyloggers).
+			\item \textit{Constraints:} Operations strictly depend on TLS-secured endpoints in production to prevent man-in-the-middle attacks during public key fetching. The initial key generation step requires adequate system entropy.
+		\end{itemize}
+\end{itemize}

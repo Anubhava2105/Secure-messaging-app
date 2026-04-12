@@ -54,7 +54,9 @@ function makeSkippedMapKey(ratchetId: string, messageNumber: number): string {
   return `${ratchetId}:${messageNumber}`;
 }
 
-function getOrCreateReceiveEpochCounters(contactId: string): Map<string, number> {
+function getOrCreateReceiveEpochCounters(
+  contactId: string,
+): Map<string, number> {
   const existing = recvCountersByRatchet.get(contactId);
   if (existing) return existing;
 
@@ -65,7 +67,10 @@ function getOrCreateReceiveEpochCounters(contactId: string): Map<string, number>
   return created;
 }
 
-function getReceiveExpectedForRatchet(contactId: string, ratchetId: string): number {
+function getReceiveExpectedForRatchet(
+  contactId: string,
+  ratchetId: string,
+): number {
   const perEpoch = getOrCreateReceiveEpochCounters(contactId);
   if (perEpoch.has(ratchetId)) {
     return perEpoch.get(ratchetId) ?? 0;
@@ -79,14 +84,17 @@ function getReceiveExpectedForRatchet(contactId: string, ratchetId: string): num
 function setReceiveExpectedForRatchet(
   contactId: string,
   ratchetId: string,
-  value: number
+  value: number,
 ): void {
   const perEpoch = getOrCreateReceiveEpochCounters(contactId);
   perEpoch.set(ratchetId, value);
   recvCounters.set(contactId, value);
 }
 
-function pruneReceiveEpochState(contactId: string, keepRatchetId?: string): void {
+function pruneReceiveEpochState(
+  contactId: string,
+  keepRatchetId?: string,
+): void {
   const perEpoch = recvCountersByRatchet.get(contactId);
   if (!perEpoch || perEpoch.size <= MAX_RATCHET_EPOCHS) return;
 
@@ -116,7 +124,7 @@ function pruneReceiveEpochState(contactId: string, keepRatchetId?: string): void
 }
 
 function parseSkippedMapKey(
-  composite: string
+  composite: string,
 ): { ratchetId: string; messageNumber: number } | null {
   const idx = composite.lastIndexOf(":");
   if (idx <= 0) return null;
@@ -131,12 +139,12 @@ function parseSkippedMapKey(
 function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
     bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength
+    bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
 }
 
 async function exportRatchetPrivateKey(
-  privateKey: CryptoKey | undefined
+  privateKey: CryptoKey | undefined,
 ): Promise<JsonWebKey | undefined> {
   if (!privateKey) return undefined;
   try {
@@ -147,17 +155,13 @@ async function exportRatchetPrivateKey(
 }
 
 async function importRatchetPrivateKey(
-  jwk: JsonWebKey | undefined
+  jwk: JsonWebKey | undefined,
 ): Promise<CryptoKey | null> {
   if (!jwk) return null;
   try {
-    return await crypto.subtle.importKey(
-      "jwk",
-      jwk,
-      ECDH_ALGORITHM,
-      true,
-      ["deriveBits"]
-    );
+    return await crypto.subtle.importKey("jwk", jwk, ECDH_ALGORITHM, true, [
+      "deriveBits",
+    ]);
   } catch {
     return null;
   }
@@ -165,7 +169,7 @@ async function importRatchetPrivateKey(
 
 async function toStoredSession(
   contactId: string,
-  session: Session
+  session: Session,
 ): Promise<StoredSession> {
   const skipped = skippedRecvMessageKeys.get(contactId);
   const serializedSkipped = skipped
@@ -181,12 +185,12 @@ async function toStoredSession(
         })
         .filter(
           (
-            entry
+            entry,
           ): entry is {
             ratchetId: string;
             messageNumber: number;
             key: Uint8Array;
-          } => entry !== null
+          } => entry !== null,
         )
         .sort((a, b) => a.messageNumber - b.messageNumber)
         .slice(-MAX_SKIPPED_KEYS)
@@ -198,7 +202,7 @@ async function toStoredSession(
     : [];
 
   const localRatchetPrivateJwk = await exportRatchetPrivateKey(
-    localRatchetPrivateKeys.get(contactId)
+    localRatchetPrivateKeys.get(contactId),
   );
   const localRatchetPublicKey = localRatchetPublicKeys.get(contactId);
   const remoteRatchetPublicKey = remoteRatchetPublicKeys.get(contactId);
@@ -210,7 +214,7 @@ async function toStoredSession(
             typeof ratchetId === "string" &&
             ratchetId.length > 0 &&
             Number.isInteger(nextMessageNumber) &&
-            nextMessageNumber >= 0
+            nextMessageNumber >= 0,
         )
         .map(([ratchetId, nextMessageNumber]) => ({
           ratchetId,
@@ -249,11 +253,11 @@ async function toStoredSession(
 
 async function hydrateSessionState(
   contactId: string,
-  stored: StoredSession
+  stored: StoredSession,
 ): Promise<void> {
   sendCounters.set(
     contactId,
-    stored.sendMessageCounter ?? Number(stored.messageCounter) ?? 0
+    stored.sendMessageCounter ?? Number(stored.messageCounter) ?? 0,
   );
   recvCounters.set(contactId, stored.recvMessageCounter ?? 0);
 
@@ -277,19 +281,19 @@ async function hydrateSessionState(
   if (stored.localRatchetPublicKey) {
     localRatchetPublicKeys.set(
       contactId,
-      new Uint8Array(stored.localRatchetPublicKey)
+      new Uint8Array(stored.localRatchetPublicKey),
     );
   }
 
   if (stored.remoteRatchetPublicKey) {
     remoteRatchetPublicKeys.set(
       contactId,
-      new Uint8Array(stored.remoteRatchetPublicKey)
+      new Uint8Array(stored.remoteRatchetPublicKey),
     );
   }
 
   const restoredLocalPrivate = await importRatchetPrivateKey(
-    stored.localRatchetPrivateJwk
+    stored.localRatchetPrivateJwk,
   );
   if (restoredLocalPrivate) {
     localRatchetPrivateKeys.set(contactId, restoredLocalPrivate);
@@ -304,7 +308,7 @@ async function hydrateSessionState(
   } else {
     ratchetNeedsAnnouncement.set(
       contactId,
-      stored.ratchetNeedsAnnouncement ?? false
+      stored.ratchetNeedsAnnouncement ?? false,
     );
     ratchetAdvertised.set(contactId, stored.ratchetAdvertised ?? false);
   }
@@ -324,7 +328,7 @@ async function hydrateSessionState(
           : LEGACY_RATCHET_ID;
       skippedMap.set(
         makeSkippedMapKey(ratchetId, entry.messageNumber),
-        new Uint8Array(entry.key)
+        new Uint8Array(entry.key),
       );
     }
   }
@@ -356,19 +360,19 @@ function fromStoredSession(stored: StoredSession): Session {
 
 async function hmacSha384(
   key: Uint8Array,
-  data: Uint8Array
+  data: Uint8Array,
 ): Promise<Uint8Array> {
   const cryptoKey = await crypto.subtle.importKey(
     "raw",
     key as BufferSource,
     { name: "HMAC", hash: "SHA-384" },
     false,
-    ["sign"]
+    ["sign"],
   );
   const result = await crypto.subtle.sign(
     "HMAC",
     cryptoKey,
-    data as BufferSource
+    data as BufferSource,
   );
   return new Uint8Array(result);
 }
@@ -379,11 +383,11 @@ async function ratchetStep(chainKey: Uint8Array): Promise<{
 }> {
   const nextChainKey = await hmacSha384(
     chainKey,
-    new TextEncoder().encode("SecureMsg-ChainStep-v1")
+    new TextEncoder().encode("SecureMsg-ChainStep-v1"),
   );
   const messageKeyFull = await hmacSha384(
     chainKey,
-    new TextEncoder().encode("SecureMsg-MessageKey-v1")
+    new TextEncoder().encode("SecureMsg-MessageKey-v1"),
   );
 
   return {
@@ -401,7 +405,10 @@ function arraysEqual(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 async function ensureLocalRatchetKey(contactId: string): Promise<void> {
-  if (localRatchetPrivateKeys.has(contactId) && localRatchetPublicKeys.has(contactId)) {
+  if (
+    localRatchetPrivateKeys.has(contactId) &&
+    localRatchetPublicKeys.has(contactId)
+  ) {
     return;
   }
 
@@ -420,21 +427,21 @@ async function ensureLocalRatchetKey(contactId: string): Promise<void> {
 async function deriveRootAndChain(
   rootKey: Uint8Array,
   dhSecret: Uint8Array,
-  direction: "send" | "recv"
+  direction: "send" | "recv",
 ): Promise<{ nextRootKey: Uint8Array; chainKey: Uint8Array }> {
   const nextRootKeyFull = await hmacSha384(
     rootKey,
     new Uint8Array([
       ...new TextEncoder().encode("SecureMsg-DR-Root-v1"),
       ...dhSecret,
-    ])
+    ]),
   );
   const nextRootKey = nextRootKeyFull.slice(0, 32);
   const chainKeyFull = await hmacSha384(
     nextRootKey,
     new TextEncoder().encode(
-      direction === "send" ? "SecureMsg-DR-Send-v1" : "SecureMsg-DR-Recv-v1"
-    )
+      direction === "send" ? "SecureMsg-DR-Send-v1" : "SecureMsg-DR-Recv-v1",
+    ),
   );
 
   return {
@@ -446,7 +453,7 @@ async function deriveRootAndChain(
 async function applyReceiveRatchet(
   contactId: string,
   session: Session,
-  incomingRatchetPublicKey: Uint8Array
+  incomingRatchetPublicKey: Uint8Array,
 ): Promise<void> {
   await ensureLocalRatchetKey(contactId);
   const localPrivate = localRatchetPrivateKeys.get(contactId);
@@ -456,31 +463,34 @@ async function applyReceiveRatchet(
 
   const dhSecret = await deriveECDHSharedSecretFromBytes(
     localPrivate,
-    incomingRatchetPublicKey
+    incomingRatchetPublicKey,
   );
   const { nextRootKey, chainKey } = await deriveRootAndChain(
     session.keys.rootKey,
     dhSecret,
-    "recv"
+    "recv",
   );
 
   session.keys.rootKey = nextRootKey;
   session.recvChainKey = chainKey;
 }
 
-async function applySendRatchet(contactId: string, session: Session): Promise<void> {
+async function applySendRatchet(
+  contactId: string,
+  session: Session,
+): Promise<void> {
   const remoteRatchet = remoteRatchetPublicKeys.get(contactId);
   if (!remoteRatchet) return;
 
   const newLocalRatchet = await generateExportableECDHKeyPair();
   const dhSecret = await deriveECDHSharedSecretFromBytes(
     newLocalRatchet.privateKey,
-    remoteRatchet
+    remoteRatchet,
   );
   const { nextRootKey, chainKey } = await deriveRootAndChain(
     session.keys.rootKey,
     dhSecret,
-    "send"
+    "send",
   );
 
   session.keys.rootKey = nextRootKey;
@@ -504,7 +514,7 @@ export function getSession(contactId: string): Session | null {
  * Checks memory cache first, then IndexedDB.
  */
 export async function getSessionAsync(
-  contactId: string
+  contactId: string,
 ): Promise<Session | null> {
   const cached = activeSessions.get(contactId);
   if (cached) {
@@ -537,7 +547,7 @@ export async function getSessionAsync(
  */
 export async function saveSession(
   contactId: string,
-  session: Session
+  session: Session,
 ): Promise<void> {
   if (!sendCounters.has(contactId)) {
     sendCounters.set(contactId, Number(session.messageCounter));
@@ -618,7 +628,7 @@ export async function clearAllSessions(): Promise<void> {
  * This is used for nonce generation to prevent replay attacks.
  */
 export async function incrementMessageCounter(
-  contactId: string
+  contactId: string,
 ): Promise<bigint> {
   const session = await getSessionAsync(contactId);
   if (!session) {
@@ -634,7 +644,7 @@ export async function incrementMessageCounter(
  * Advance sender chain and derive one-time message key.
  */
 export async function nextSendMessageKey(
-  contactId: string
+  contactId: string,
 ): Promise<Uint8Array> {
   const derived = await nextSendMessageKeyWithNumber(contactId);
   return derived.messageKey;
@@ -681,7 +691,7 @@ export async function nextSendMessageKeyWithNumber(contactId: string): Promise<{
  * Advance receiver chain and derive one-time message key.
  */
 export async function nextReceiveMessageKey(
-  contactId: string
+  contactId: string,
 ): Promise<Uint8Array> {
   return nextReceiveMessageKeyAt(contactId);
 }
@@ -704,7 +714,7 @@ function trimSkippedMap(skipped: Map<string, Uint8Array>): void {
 export async function nextReceiveMessageKeyAt(
   contactId: string,
   targetMessageNumber?: number,
-  incomingRatchetPublicKey?: Uint8Array
+  incomingRatchetPublicKey?: Uint8Array,
 ): Promise<Uint8Array> {
   const session = await getSessionAsync(contactId);
   if (!session) {
@@ -713,11 +723,12 @@ export async function nextReceiveMessageKeyAt(
 
   await ensureLocalRatchetKey(contactId);
 
-  const currentRemoteRatchetBeforeUpdate = remoteRatchetPublicKeys.get(contactId);
+  const currentRemoteRatchetBeforeUpdate =
+    remoteRatchetPublicKeys.get(contactId);
   const ratchetIdForMessage = getRatchetId(
     incomingRatchetPublicKey && incomingRatchetPublicKey.length > 0
       ? incomingRatchetPublicKey
-      : currentRemoteRatchetBeforeUpdate
+      : currentRemoteRatchetBeforeUpdate,
   );
 
   let remoteChanged = false;
@@ -733,7 +744,7 @@ export async function nextReceiveMessageKeyAt(
       remoteRatchetPublicKeys.set(contactId, incomingRatchetPublicKey);
       getOrCreateReceiveEpochCounters(contactId).set(
         ratchetIdForMessage,
-        getReceiveExpectedForRatchet(contactId, ratchetIdForMessage)
+        getReceiveExpectedForRatchet(contactId, ratchetIdForMessage),
       );
       pruneReceiveEpochState(contactId, ratchetIdForMessage);
 
@@ -762,7 +773,10 @@ export async function nextReceiveMessageKeyAt(
       throw new Error("Invalid inbound message number");
     }
 
-    const compositeKey = makeSkippedMapKey(ratchetIdForMessage, targetMessageNumber);
+    const compositeKey = makeSkippedMapKey(
+      ratchetIdForMessage,
+      targetMessageNumber,
+    );
     const cached = skipped.get(compositeKey);
     if (cached) {
       skipped.delete(compositeKey);
@@ -785,7 +799,11 @@ export async function nextReceiveMessageKeyAt(
       // Some peers may reset sender-chain counters after a DH ratchet step.
       // If this message is explicitly tied to a newly observed ratchet key,
       // allow receive counter reset for this epoch.
-      if (remoteChanged && incomingRatchetPublicKey && incomingRatchetPublicKey.length > 0) {
+      if (
+        remoteChanged &&
+        incomingRatchetPublicKey &&
+        incomingRatchetPublicKey.length > 0
+      ) {
         expected = 0;
         setReceiveExpectedForRatchet(contactId, ratchetIdForMessage, expected);
       } else {
@@ -799,12 +817,16 @@ export async function nextReceiveMessageKeyAt(
 
     while (expected <= targetMessageNumber) {
       const { nextChainKey, messageKey } = await ratchetStep(
-        session.recvChainKey
+        session.recvChainKey,
       );
       session.recvChainKey = nextChainKey;
 
       if (expected === targetMessageNumber) {
-        setReceiveExpectedForRatchet(contactId, ratchetIdForMessage, expected + 1);
+        setReceiveExpectedForRatchet(
+          contactId,
+          ratchetIdForMessage,
+          expected + 1,
+        );
         trimSkippedMap(skipped);
         await saveSession(contactId, session);
         return messageKey;

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Session Manager Service.
  *
  * Manages active encryption sessions with contacts.

@@ -1,4 +1,4 @@
-/**
+﻿/**
  * Secure key storage using IndexedDB.
  *
  * SECURITY:

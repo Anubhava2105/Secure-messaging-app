@@ -46,8 +46,8 @@ export class KeyStore {
       request.onerror = () => {
         finalize(() =>
           reject(
-            new Error(`Failed to open database: ${request.error?.message}`)
-          )
+            new Error(`Failed to open database: ${request.error?.message}`),
+          ),
         );
       };
 
@@ -55,9 +55,9 @@ export class KeyStore {
         finalize(() =>
           reject(
             new Error(
-              "IndexedDB upgrade is blocked by another open tab/window. Close other app tabs and retry."
-            )
-          )
+              "IndexedDB upgrade is blocked by another open tab/window. Close other app tabs and retry.",
+            ),
+          ),
         );
       };
 
@@ -162,7 +162,7 @@ export class KeyStore {
    */
   async storeSignedPrekey(
     prekey: StoredPrekey,
-    ownerUserId = "local-user"
+    ownerUserId = "local-user",
   ): Promise<void> {
     const db = await this.ensureReady();
 
@@ -187,7 +187,7 @@ export class KeyStore {
   async getSignedPrekey(
     id: number,
     type: "ecc" | "pqc",
-    ownerUserId = "local-user"
+    ownerUserId = "local-user",
   ): Promise<StoredPrekey | null> {
     const db = await this.ensureReady();
 
@@ -218,7 +218,7 @@ export class KeyStore {
   async deletePrekey(
     id: number,
     type: "ecc" | "pqc",
-    ownerUserId = "local-user"
+    ownerUserId = "local-user",
   ): Promise<void> {
     const db = await this.ensureReady();
 

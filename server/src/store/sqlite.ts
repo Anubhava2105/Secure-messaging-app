@@ -66,19 +66,19 @@ export class SqliteStore {
     const hasHandshakeData = columns.some((c) => c.name === "handshakeData");
     if (!hasHandshakeData) {
       this.db.exec(
-        "ALTER TABLE pending_messages ADD COLUMN handshakeData TEXT"
+        "ALTER TABLE pending_messages ADD COLUMN handshakeData TEXT",
       );
     }
     const hasMessageNumber = columns.some((c) => c.name === "messageNumber");
     if (!hasMessageNumber) {
       this.db.exec(
-        "ALTER TABLE pending_messages ADD COLUMN messageNumber INTEGER"
+        "ALTER TABLE pending_messages ADD COLUMN messageNumber INTEGER",
       );
     }
     const hasRatchetKeyEcc = columns.some((c) => c.name === "ratchetKeyEcc");
     if (!hasRatchetKeyEcc) {
       this.db.exec(
-        "ALTER TABLE pending_messages ADD COLUMN ratchetKeyEcc TEXT"
+        "ALTER TABLE pending_messages ADD COLUMN ratchetKeyEcc TEXT",
       );
     }
   }
@@ -88,10 +88,10 @@ export class SqliteStore {
     const data = JSON.stringify({ ...rest, originalUsername: username });
 
     const insertUser = this.db.prepare(
-      "INSERT INTO users (id, username, data, lastSeen) VALUES (?, ?, ?, ?)"
+      "INSERT INTO users (id, username, data, lastSeen) VALUES (?, ?, ?, ?)",
     );
     const insertPrekey = this.db.prepare(
-      "INSERT INTO one_time_prekeys (userId, id, publicKey) VALUES (?, ?, ?)"
+      "INSERT INTO one_time_prekeys (userId, id, publicKey) VALUES (?, ?, ?)",
     );
 
     const tx = this.db.transaction(() => {
@@ -141,7 +141,7 @@ export class SqliteStore {
     if (!row) return null;
     const prekeys = this.db
       .prepare(
-        "SELECT id, publicKey FROM one_time_prekeys WHERE userId = ? ORDER BY id ASC"
+        "SELECT id, publicKey FROM one_time_prekeys WHERE userId = ? ORDER BY id ASC",
       )
       .all(userId) as any[];
     return this.rowToUser(row, prekeys);
@@ -154,7 +154,7 @@ export class SqliteStore {
     if (!row) return null;
     const prekeys = this.db
       .prepare(
-        "SELECT id, publicKey FROM one_time_prekeys WHERE userId = ? ORDER BY id ASC"
+        "SELECT id, publicKey FROM one_time_prekeys WHERE userId = ? ORDER BY id ASC",
       )
       .all(row.id) as any[];
     return this.rowToUser(row, prekeys);
@@ -168,10 +168,10 @@ export class SqliteStore {
 
   async consumeOneTimePrekey(userId: string): Promise<OneTimePreKeyDto | null> {
     const stmtSelect = this.db.prepare(
-      "SELECT id, publicKey FROM one_time_prekeys WHERE userId = ? ORDER BY id ASC LIMIT 1"
+      "SELECT id, publicKey FROM one_time_prekeys WHERE userId = ? ORDER BY id ASC LIMIT 1",
     );
     const stmtDelete = this.db.prepare(
-      "DELETE FROM one_time_prekeys WHERE userId = ? AND id = ?"
+      "DELETE FROM one_time_prekeys WHERE userId = ? AND id = ?",
     );
 
     const tx = this.db.transaction(() => {
@@ -188,10 +188,10 @@ export class SqliteStore {
 
   async addOneTimePrekeys(
     userId: string,
-    prekeys: OneTimePreKeyDto[]
+    prekeys: OneTimePreKeyDto[],
   ): Promise<void> {
     const insertPrekey = this.db.prepare(
-      "INSERT OR IGNORE INTO one_time_prekeys (userId, id, publicKey) VALUES (?, ?, ?)"
+      "INSERT OR IGNORE INTO one_time_prekeys (userId, id, publicKey) VALUES (?, ?, ?)",
     );
     const tx = this.db.transaction(() => {
       for (const pk of prekeys) {
@@ -204,7 +204,7 @@ export class SqliteStore {
   async getOneTimePrekeyCount(userId: string): Promise<number> {
     const row = this.db
       .prepare(
-        "SELECT COUNT(*) as count FROM one_time_prekeys WHERE userId = ?"
+        "SELECT COUNT(*) as count FROM one_time_prekeys WHERE userId = ?",
       )
       .get(userId) as any;
     return row.count;
@@ -216,11 +216,11 @@ export class SqliteStore {
     blob: string,
     handshakeData?: string,
     ratchetKeyEcc?: string,
-    messageNumber?: number
+    messageNumber?: number,
   ): Promise<void> {
     this.db
       .prepare(
-        "INSERT INTO pending_messages (recipientId, senderId, blob, handshakeData, ratchetKeyEcc, messageNumber, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO pending_messages (recipientId, senderId, blob, handshakeData, ratchetKeyEcc, messageNumber, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
       )
       .run(
         recipientId,
@@ -229,7 +229,7 @@ export class SqliteStore {
         handshakeData ?? null,
         ratchetKeyEcc ?? null,
         Number.isInteger(messageNumber) ? messageNumber : null,
-        Date.now()
+        Date.now(),
       );
   }
 
@@ -244,10 +244,10 @@ export class SqliteStore {
     }>
   > {
     const stmtSelect = this.db.prepare(
-      "SELECT senderId, blob, handshakeData, ratchetKeyEcc, messageNumber, timestamp FROM pending_messages WHERE recipientId = ? ORDER BY timestamp ASC"
+      "SELECT senderId, blob, handshakeData, ratchetKeyEcc, messageNumber, timestamp FROM pending_messages WHERE recipientId = ? ORDER BY timestamp ASC",
     );
     const stmtDelete = this.db.prepare(
-      "DELETE FROM pending_messages WHERE recipientId = ?"
+      "DELETE FROM pending_messages WHERE recipientId = ?",
     );
 
     const tx = this.db.transaction(() => {

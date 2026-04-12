@@ -14,13 +14,13 @@ declare global {
     electronAPI?: {
       connectRelay: (
         url: string,
-        token: string
+        token: string,
       ) => Promise<{ success: boolean; error?: string }>;
       sendMessage: (data: string) => Promise<boolean>;
       disconnectRelay: () => Promise<{ success: boolean }>;
       onMessage: (callback: (data: string) => void) => () => void;
       onConnectionClosed: (
-        callback: (info: { code: number; reason: string }) => void
+        callback: (info: { code: number; reason: string }) => void,
       ) => () => void;
     };
   }
@@ -175,7 +175,7 @@ export function useWebSocket({
           if (event.code !== 1000 && userId && autoConnect) {
             const delay = Math.min(
               1000 * Math.pow(2, reconnectAttempt.current),
-              MAX_RECONNECT_DELAY
+              MAX_RECONNECT_DELAY,
             );
             console.log(`[WebSocket] Reconnecting in ${delay}ms...`);
             reconnectTimer.current = setTimeout(() => {
@@ -289,7 +289,7 @@ export function useWebSocket({
         queueMessage(data);
       }
     },
-    [isElectron, queueMessage]
+    [isElectron, queueMessage],
   );
 
   // Auto-connect on mount (deferred to avoid synchronous setState)
@@ -334,7 +334,7 @@ export function useWebSocket({
 
       const delay = Math.min(
         1000 * Math.pow(2, reconnectAttempt.current),
-        MAX_RECONNECT_DELAY
+        MAX_RECONNECT_DELAY,
       );
 
       if (reconnectTimer.current) {

@@ -253,7 +253,7 @@ async function hydrateSessionState(
 ): Promise<void> {
   sendCounters.set(
     contactId,
-    stored.sendMessageCounter ?? (stored.messageCounter !== undefined ? Number(stored.messageCounter) : 0)
+    stored.sendMessageCounter ?? Number(stored.messageCounter) ?? 0
   );
   recvCounters.set(contactId, stored.recvMessageCounter ?? 0);
 
@@ -360,12 +360,16 @@ async function hmacSha384(
 ): Promise<Uint8Array> {
   const cryptoKey = await crypto.subtle.importKey(
     "raw",
-    toArrayBuffer(key),
+    key as BufferSource,
     { name: "HMAC", hash: "SHA-384" },
     false,
     ["sign"]
   );
-  const result = await crypto.subtle.sign("HMAC", cryptoKey, toArrayBuffer(data));
+  const result = await crypto.subtle.sign(
+    "HMAC",
+    cryptoKey,
+    data as BufferSource
+  );
   return new Uint8Array(result);
 }
 

@@ -52,7 +52,7 @@ interface MessengerContextType {
 }
 
 const MessengerContext = createContext<MessengerContextType | undefined>(
-  undefined
+  undefined,
 );
 
 export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
@@ -64,7 +64,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
   const [activeContact, setActiveContact] = useState<Contact | null>(null);
   const [typingUsers, setTypingUsers] = useState<Set<string>>(new Set());
   const typingTimers = React.useRef<Map<string, ReturnType<typeof setTimeout>>>(
-    new Map()
+    new Map(),
   );
   const pendingHandshakeByPeer = React.useRef<Map<string, string>>(new Map());
   const retryCountByMessage = React.useRef<Map<string, number>>(new Map());
@@ -96,8 +96,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           if (userInfo) {
             setContacts((prev) =>
               prev.map((c) =>
-                c.id === senderId ? { ...c, username: userInfo.username } : c
-              )
+                c.id === senderId ? { ...c, username: userInfo.username } : c,
+              ),
             );
             store.storeContact({
               id: senderId,
@@ -119,7 +119,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       recipientId: string,
       messageId: string,
       timestamp: number,
-      forceSessionReset = false
+      forceSessionReset = false,
     ) => {
       if (!user) {
         throw new Error("Not authenticated");
@@ -138,7 +138,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       // to the first encrypted message for the peer to establish matching keys.
       const sessionContext = await ensureSessionForOutgoing(
         user.id,
-        recipientId
+        recipientId,
       );
       if (!sessionContext) {
         throw new Error("Failed to establish secure session");
@@ -146,8 +146,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const handshakeData = hadExistingSession
         ? undefined
-        : pendingHandshakeByPeer.current.get(recipientId) ??
-          sessionContext.handshakeData;
+        : (pendingHandshakeByPeer.current.get(recipientId) ??
+          sessionContext.handshakeData);
 
       if (hadExistingSession) {
         pendingHandshakeByPeer.current.delete(recipientId);
@@ -180,7 +180,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         pendingHandshakeByPeer.current.delete(recipientId);
       }
     },
-    [user]
+    [user],
   );
 
   // ===== Incoming Message Handler =====
@@ -203,7 +203,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
             (m) =>
               m.id === msg.messageId &&
               m.senderId === user.id &&
-              m.recipientId === msg.senderId
+              m.recipientId === msg.senderId,
           );
 
           if (!failed) {
@@ -223,8 +223,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
               prev.map((m) =>
                 m.id === failed.id && m.status === "sending"
                   ? { ...m, status: "error" }
-                  : m
-              )
+                  : m,
+              ),
             );
             return;
           }
@@ -234,8 +234,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
             prev.map((m) =>
               m.id === failed.id && m.status === "sending"
                 ? { ...m, status: "sending" }
-                : m
-            )
+                : m,
+            ),
           );
 
           try {
@@ -244,19 +244,19 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
               failed.recipientId,
               failed.id,
               failed.timestamp,
-              true
+              true,
             );
           } catch (err) {
             console.error(
               "[Messenger] Retry after decrypt-failed failed:",
-              err
+              err,
             );
             setMessages((prev) =>
               prev.map((m) =>
                 m.id === failed.id && m.status === "sending"
                   ? { ...m, status: "error" }
-                  : m
-              )
+                  : m,
+              ),
             );
           }
           return;
@@ -269,8 +269,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
             prev.map((m) =>
               m.id === msg.messageId && m.status === "sending"
                 ? { ...m, status: "error" }
-                : m
-            )
+                : m,
+            ),
           );
         }
         return;
@@ -282,8 +282,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           prev.map((m) =>
             m.id === msg.messageId && (!user || m.senderId === user.id)
               ? { ...m, status: "sent" }
-              : m
-          )
+              : m,
+          ),
         );
         return;
       }
@@ -305,7 +305,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
               next.delete(msg.senderId!);
               return next;
             });
-          }, 3000)
+          }, 3000),
         );
         return;
       }
@@ -314,8 +314,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       if (msg.type === "read" && msg.messageId) {
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === msg.messageId ? { ...m, status: "read" } : m
-          )
+            m.id === msg.messageId ? { ...m, status: "read" } : m,
+          ),
         );
         return;
       }
@@ -324,8 +324,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       if (msg.type === "delivered" && msg.messageId) {
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === msg.messageId ? { ...m, status: "delivered" } : m
-          )
+            m.id === msg.messageId ? { ...m, status: "delivered" } : m,
+          ),
         );
         return;
       }
@@ -334,8 +334,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       if (msg.type === "presence" && msg.senderId && msg.status) {
         setContacts((prev) =>
           prev.map((c) =>
-            c.id === msg.senderId ? { ...c, status: msg.status! } : c
-          )
+            c.id === msg.senderId ? { ...c, status: msg.status! } : c,
+          ),
         );
         return;
       }
@@ -352,7 +352,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           await handleIncomingHandshake(
             user.id,
             msg.senderId,
-            msg.handshakeData
+            msg.handshakeData,
           );
           // If peer already established the shared session, any locally pending
           // outbound handshake for the same peer is stale and must be discarded.
@@ -379,11 +379,11 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           const recvMessageKey = await nextReceiveMessageKeyAt(
             msg.senderId,
             msg.messageNumber,
-            msg.ratchetKeyEcc ? base64ToBytes(msg.ratchetKeyEcc) : undefined
+            msg.ratchetKeyEcc ? base64ToBytes(msg.ratchetKeyEcc) : undefined,
           );
           const decrypted = await decryptMessage(
             msg.encryptedBlob,
-            recvMessageKey
+            recvMessageKey,
           );
           const newMessage: Message = {
             id: msg.messageId || generateRandomId(),
@@ -434,7 +434,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
     },
-    [user, messages, autoAddContact, activeContact, transmitOutboundMessage]
+    [user, messages, autoAddContact, activeContact, transmitOutboundMessage],
   );
 
   // ===== WebSocket Connection =====
@@ -468,7 +468,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
             status: c.status,
             publicKeyEcc: new Uint8Array(),
             publicKeyPqc: new Uint8Array(),
-          }))
+          })),
         );
       }
     });
@@ -483,7 +483,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
             timestamp: m.timestamp,
             isPqcProtected: m.isPqcProtected,
             status: m.status === "sending" ? "error" : m.status,
-          }))
+          })),
         );
       }
     });
@@ -539,17 +539,17 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           content,
           activeContact.id,
           messageId,
-          timestamp
+          timestamp,
         );
       } catch (err) {
         console.error("[Messenger] Failed to send message:", err);
 
         setMessages((prev) =>
-          prev.map((m) => (m.id === messageId ? { ...m, status: "error" } : m))
+          prev.map((m) => (m.id === messageId ? { ...m, status: "error" } : m)),
         );
       }
     },
-    [activeContact, user, connectionStatus, transmitOutboundMessage]
+    [activeContact, user, connectionStatus, transmitOutboundMessage],
   );
 
   // ===== Add Contact =====
@@ -604,7 +604,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       console.log("[Messenger] Contact added:", username);
       return true;
     },
-    [contacts, user]
+    [contacts, user],
   );
 
   // ===== Typing Indicator =====
@@ -628,7 +628,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       };
       send(JSON.stringify(msg));
     },
-    [send]
+    [send],
   );
 
   return (
@@ -651,7 +651,6 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 };
 
-// eslint-disable-next-line react-refresh/only-export-components
 export const useMessenger = () => {
   const context = useContext(MessengerContext);
   if (context === undefined) {

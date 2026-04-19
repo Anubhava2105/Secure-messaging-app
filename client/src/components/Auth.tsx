@@ -5,20 +5,21 @@ import "../styles/Auth.css";
 
 const Auth: React.FC = () => {
   const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
   const { register, login, isLoading, error } = useAuth();
   const [step, setStep] = useState<"welcome" | "generating">("welcome");
   const [mode, setMode] = useState<"register" | "login">("register");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim()) return;
+    if (!username.trim() || password.length < 8) return;
 
     if (mode === "register") {
       setStep("generating");
-      await register(username);
+      await register(username, password);
     } else {
       setStep("generating");
-      const success = await login(username);
+      const success = await login(username, password);
       if (!success) {
         setStep("welcome");
       }
@@ -78,12 +79,29 @@ const Auth: React.FC = () => {
             />
           </div>
 
+          <div className="input-group">
+            <label htmlFor="password">
+              {mode === "register"
+                ? "Create a password"
+                : "Enter your password"}
+            </label>
+            <input
+              id="password"
+              type="password"
+              placeholder="At least 8 characters"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              disabled={isLoading}
+              minLength={8}
+            />
+          </div>
+
           {error && <p className="error-message">{error}</p>}
 
           <button
             type="submit"
             className="btn-primary"
-            disabled={isLoading || !username.trim()}
+            disabled={isLoading || !username.trim() || password.length < 8}
           >
             {isLoading
               ? "Processing..."

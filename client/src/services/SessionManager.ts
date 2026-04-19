@@ -255,9 +255,11 @@ async function hydrateSessionState(
   contactId: string,
   stored: StoredSession,
 ): Promise<void> {
+  const fallbackSendCounter = Number(stored.messageCounter);
   sendCounters.set(
     contactId,
-    stored.sendMessageCounter ?? Number(stored.messageCounter) ?? 0,
+    stored.sendMessageCounter ??
+      (Number.isFinite(fallbackSendCounter) ? fallbackSendCounter : 0),
   );
   recvCounters.set(contactId, stored.recvMessageCounter ?? 0);
 

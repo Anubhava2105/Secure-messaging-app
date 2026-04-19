@@ -15,10 +15,15 @@ import type { WsIncomingMessage, WsOutgoingMessage } from "../types/wsTypes";
 import { useAuth } from "./AuthContext";
 import { generateRandomId } from "../crypto/utils/random";
 import {
+  addGroupMember as apiAddGroupMember,
+  createGroup as apiCreateGroup,
   findUserByUsername,
   findUserById,
   getPreKeyBundle,
+  listGroups,
+  removeGroupMember as apiRemoveGroupMember,
 } from "../services/api";
+import type { GroupInfoDTO } from "../services/api";
 import {
   getSessionAsync,
   deleteSession,
@@ -34,6 +39,10 @@ import {
   ensureSessionForOutgoing,
   handleIncomingHandshake,
 } from "../services/HandshakeManager";
+import {
+  ensureContactTrustFromBundle,
+  markContactTrusted,
+} from "../services/TrustManager";
 import { getKeyStore } from "../crypto/storage/keystore";
 import type { StoredMessage } from "../crypto/storage/keystore";
 
@@ -45,6 +54,9 @@ interface MessengerContextType {
   setActiveContact: (contact: Contact | null) => void;
   sendMessage: (content: string) => Promise<void>;
   addContact: (username: string) => Promise<boolean>;
+  addGroup: (groupName: string, usernames: string[]) => Promise<boolean>;
+  addGroupMember: (groupId: string, username: string) => Promise<boolean>;
+  removeGroupMember: (groupId: string, userId: string) => Promise<boolean>;
   connectionStatus: "connected" | "disconnected" | "connecting";
   typingUsers: Set<string>;
   sendTypingIndicator: () => void;
@@ -54,6 +66,95 @@ interface MessengerContextType {
 const MessengerContext = createContext<MessengerContextType | undefined>(
   undefined,
 );
+
+function isGroupContact(contact: Contact | null): boolean {
+  return Boolean(contact?.kind === "group");
+}
+
+function resolveConversationId(
+  message: Message,
+  currentUserId?: string,
+): string {
+  if (message.conversationId && message.conversationId.length > 0) {
+    return message.conversationId;
+  }
+  if (message.groupId && message.groupId.length > 0) {
+    return message.groupId;
+  }
+  if (currentUserId && message.senderId === currentUserId) {
+    return message.recipientId;
+  }
+  return message.senderId;
+}
+
+function uniqueIds(values: string[] | undefined): string[] {
+  if (!values) return [];
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function resolveGroupMessageStatus(
+  message: Message,
+  currentUserId: string,
+  deliveredByUserIds: string[],
+  readByUserIds: string[],
+): Message["status"] {
+  const recipients = uniqueIds(message.groupMemberIds).filter(
+    (id) => id !== currentUserId,
+  );
+
+  const readCount = readByUserIds.filter((id) =>
+    recipients.includes(id),
+  ).length;
+  const deliveredCount = deliveredByUserIds.filter((id) =>
+    recipients.includes(id),
+  ).length;
+
+  if (recipients.length > 0 && readCount >= recipients.length) {
+    return "read";
+  }
+  if (recipients.length > 0 && deliveredCount >= recipients.length) {
+    return "delivered";
+  }
+  return "sent";
+}
+
+function applyGroupReceipt(
+  message: Message,
+  currentUserId: string,
+  senderId: string,
+  receiptType: "read" | "delivered",
+): Message {
+  const deliveredBy = uniqueIds([
+    ...(message.deliveredByUserIds ?? []),
+    senderId,
+  ]);
+  const readBy =
+    receiptType === "read"
+      ? uniqueIds([...(message.readByUserIds ?? []), senderId])
+      : uniqueIds(message.readByUserIds);
+
+  const status = resolveGroupMessageStatus(
+    message,
+    currentUserId,
+    deliveredBy,
+    readBy,
+  );
+
+  if (receiptType === "read") {
+    return {
+      ...message,
+      readByUserIds: readBy,
+      deliveredByUserIds: deliveredBy,
+      status,
+    };
+  }
+
+  return {
+    ...message,
+    deliveredByUserIds: deliveredBy,
+    status,
+  };
+}
 
 export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
   children,
@@ -70,6 +171,76 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
   const retryCountByMessage = React.useRef<Map<string, number>>(new Map());
   const sendRef = React.useRef<(data: string) => void>(() => {});
 
+  const setContactTrustInMemory = useCallback(
+    (
+      contactId: string,
+      trustState: "trusted" | "unverified" | "changed",
+      trustWarning?: string,
+    ) => {
+      setContacts((prev) =>
+        prev.map((contact) =>
+          contact.id === contactId
+            ? {
+                ...contact,
+                trustState,
+                trustWarning,
+              }
+            : contact,
+        ),
+      );
+    },
+    [],
+  );
+
+  const upsertGroupContact = useCallback((group: GroupInfoDTO) => {
+    const groupContact: Contact = {
+      id: group.groupId,
+      username: group.name,
+      kind: "group",
+      ownerId: group.ownerId,
+      membershipCommitment: group.membershipCommitment,
+      memberIds: uniqueIds(group.memberUserIds),
+      status: "online",
+      publicKeyEcc: new Uint8Array(),
+      publicKeyPqc: new Uint8Array(),
+    };
+
+    setContacts((prevContacts) => {
+      const existing = prevContacts.find((c) => c.id === group.groupId);
+      if (!existing) {
+        return [...prevContacts, groupContact];
+      }
+
+      return prevContacts.map((c) =>
+        c.id === group.groupId
+          ? {
+              ...c,
+              username: groupContact.username,
+              kind: "group",
+              ownerId: groupContact.ownerId,
+              membershipCommitment: groupContact.membershipCommitment,
+              memberIds: groupContact.memberIds,
+            }
+          : c,
+      );
+    });
+
+    getKeyStore()
+      .storeContact({
+        id: group.groupId,
+        username: group.name,
+        kind: "group",
+        ownerId: group.ownerId,
+        membershipCommitment: group.membershipCommitment,
+        memberIds: uniqueIds(group.memberUserIds),
+        status: "online",
+        trustState: undefined,
+        trustWarning: undefined,
+        trustUpdatedAt: Date.now(),
+      })
+      .catch(console.error);
+  }, []);
+
   // ===== Auto-add Contact Helper =====
   const autoAddContact = useCallback((senderId: string) => {
     setContacts((prevContacts) => {
@@ -79,9 +250,13 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         const newContact: Contact = {
           id: senderId,
           username: `User-${senderId.slice(0, 8)}`,
+          kind: "direct",
           status: "online",
           publicKeyEcc: new Uint8Array(),
           publicKeyPqc: new Uint8Array(),
+          trustState: "unverified",
+          trustWarning:
+            "Trust-on-first-use: verify this contact identity out-of-band.",
         };
 
         // Persist and async lookup of real username
@@ -89,7 +264,11 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         store.storeContact({
           id: senderId,
           username: newContact.username,
+          kind: "direct",
           status: "online",
+          trustState: newContact.trustState,
+          trustWarning: newContact.trustWarning,
+          trustUpdatedAt: Date.now(),
         });
 
         findUserById(senderId).then((userInfo) => {
@@ -99,10 +278,20 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
                 c.id === senderId ? { ...c, username: userInfo.username } : c,
               ),
             );
-            store.storeContact({
-              id: senderId,
-              username: userInfo.username,
-              status: "online",
+            store.getContact(senderId).then((existing) => {
+              store.storeContact({
+                id: senderId,
+                username: userInfo.username,
+                kind: "direct",
+                status: "online",
+                trustState: existing?.trustState,
+                trustWarning: existing?.trustWarning,
+                trustUpdatedAt: existing?.trustUpdatedAt,
+                identityKeyEccFingerprint: existing?.identityKeyEccFingerprint,
+                identityKeyPqcFingerprint: existing?.identityKeyPqcFingerprint,
+                signingKeyFingerprint: existing?.signingKeyFingerprint,
+                lastSeen: existing?.lastSeen,
+              });
             });
           }
         });
@@ -120,6 +309,13 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       messageId: string,
       timestamp: number,
       forceSessionReset = false,
+      groupMeta?: {
+        groupId: string;
+        groupName: string;
+        groupMemberIds: string[];
+        groupEventType: "group_message";
+        groupMembershipCommitment?: string;
+      },
     ) => {
       if (!user) {
         throw new Error("Not authenticated");
@@ -158,12 +354,24 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         messageNumber,
         ratchetPublicKey,
       } = await nextSendMessageKeyWithNumber(recipientId);
-      const encryptedBlob = await encryptMessage(content, sendMessageKey);
+      const encryptedBlob = await encryptMessage(content, sendMessageKey, {
+        messageId,
+        senderId: user.id,
+        recipientId,
+        groupId: groupMeta?.groupId,
+        groupEventType: groupMeta?.groupEventType,
+        groupMembershipCommitment: groupMeta?.groupMembershipCommitment,
+      });
 
       const relayMessage: WsOutgoingMessage = {
         type: "send",
         messageId,
         recipientId,
+        groupId: groupMeta?.groupId,
+        groupName: groupMeta?.groupName,
+        groupMemberIds: groupMeta?.groupMemberIds,
+        groupEventType: groupMeta?.groupEventType,
+        groupMembershipCommitment: groupMeta?.groupMembershipCommitment,
         encryptedBlob,
         handshakeData,
         ratchetKeyEcc: ratchetPublicKey
@@ -314,7 +522,11 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       if (msg.type === "read" && msg.messageId) {
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === msg.messageId ? { ...m, status: "read" } : m,
+            m.id === msg.messageId
+              ? m.groupId && user && msg.senderId
+                ? applyGroupReceipt(m, user.id, msg.senderId, "read")
+                : { ...m, status: "read" }
+              : m,
           ),
         );
         return;
@@ -324,7 +536,11 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       if (msg.type === "delivered" && msg.messageId) {
         setMessages((prev) =>
           prev.map((m) =>
-            m.id === msg.messageId ? { ...m, status: "delivered" } : m,
+            m.id === msg.messageId
+              ? m.groupId && user && msg.senderId
+                ? applyGroupReceipt(m, user.id, msg.senderId, "delivered")
+                : { ...m, status: "delivered" }
+              : m,
           ),
         );
         return;
@@ -347,13 +563,80 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           return;
         }
 
+        const incomingConversationId = msg.groupId ?? msg.senderId;
+
+        if (msg.groupId && user) {
+          const groupName =
+            msg.groupName?.trim() || `Group ${msg.groupId.slice(-6)}`;
+          const mergedMembers = Array.from(
+            new Set([...(msg.groupMemberIds ?? []), user.id, msg.senderId]),
+          );
+
+          const groupContact: Contact = {
+            id: msg.groupId,
+            username: groupName,
+            kind: "group",
+            membershipCommitment: msg.groupMembershipCommitment,
+            memberIds: mergedMembers,
+            status: "online",
+            publicKeyEcc: new Uint8Array(),
+            publicKeyPqc: new Uint8Array(),
+          };
+
+          setContacts((prevContacts) => {
+            const existing = prevContacts.find((c) => c.id === msg.groupId);
+            if (!existing) {
+              return [...prevContacts, groupContact];
+            }
+
+            return prevContacts.map((c) =>
+              c.id === msg.groupId
+                ? {
+                    ...c,
+                    username: groupName,
+                    kind: "group",
+                    membershipCommitment:
+                      msg.groupMembershipCommitment ?? c.membershipCommitment,
+                    memberIds: mergedMembers,
+                  }
+                : c,
+            );
+          });
+
+          getKeyStore()
+            .storeContact({
+              id: msg.groupId,
+              username: groupName,
+              kind: "group",
+              membershipCommitment: msg.groupMembershipCommitment,
+              memberIds: mergedMembers,
+              status: "online",
+              trustState: undefined,
+              trustWarning: undefined,
+              trustUpdatedAt: Date.now(),
+            })
+            .catch(console.error);
+        }
+
         // Handle handshake messages (first message from a new peer)
         if (msg.handshakeData && user) {
-          await handleIncomingHandshake(
+          const session = await handleIncomingHandshake(
             user.id,
             msg.senderId,
             msg.handshakeData,
           );
+
+          if (!session) {
+            const trustRecord = await getKeyStore().getContact(msg.senderId);
+            if (trustRecord?.trustState === "changed") {
+              setContactTrustInMemory(
+                msg.senderId,
+                "changed",
+                trustRecord.trustWarning,
+              );
+            }
+          }
+
           // If peer already established the shared session, any locally pending
           // outbound handshake for the same peer is stale and must be discarded.
           pendingHandshakeByPeer.current.delete(msg.senderId);
@@ -384,11 +667,25 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           const decrypted = await decryptMessage(
             msg.encryptedBlob,
             recvMessageKey,
+            {
+              messageId: msg.messageId,
+              senderId: msg.senderId,
+              recipientId: user?.id || "",
+              groupId: msg.groupId,
+              groupEventType: msg.groupEventType,
+              groupMembershipCommitment: msg.groupMembershipCommitment,
+            },
           );
           const newMessage: Message = {
             id: msg.messageId || generateRandomId(),
             senderId: msg.senderId,
-            recipientId: user?.id || "",
+            recipientId: msg.groupId ?? (user?.id || ""),
+            conversationId: incomingConversationId,
+            groupId: msg.groupId,
+            groupName: msg.groupName,
+            groupMemberIds: msg.groupMemberIds,
+            groupEventType: msg.groupEventType,
+            groupMembershipCommitment: msg.groupMembershipCommitment,
             content: decrypted,
             timestamp: msg.timestamp || Date.now(),
             isPqcProtected: true,
@@ -405,12 +702,22 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           const store = getKeyStore();
           const storedMsg: StoredMessage = {
             ...newMessage,
-            peerId: msg.senderId,
+            peerId: incomingConversationId,
+            conversationId: incomingConversationId,
           };
           store.storeMessage(storedMsg).catch(console.error);
 
+          // Delivery receipt acknowledges successful decrypt/persistence.
+          const deliveredReceipt: WsOutgoingMessage = {
+            type: "delivered",
+            messageId: newMessage.id,
+            recipientId: msg.senderId,
+            timestamp: Date.now(),
+          };
+          sendRef.current(JSON.stringify(deliveredReceipt));
+
           // Auto-send read receipt if user is currently viewing this conversation.
-          if (activeContact?.id === msg.senderId) {
+          if (activeContact?.id === incomingConversationId) {
             const receipt: WsOutgoingMessage = {
               type: "read",
               messageId: newMessage.id,
@@ -434,7 +741,14 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         }
       }
     },
-    [user, messages, autoAddContact, activeContact, transmitOutboundMessage],
+    [
+      user,
+      messages,
+      autoAddContact,
+      activeContact,
+      transmitOutboundMessage,
+      setContactTrustInMemory,
+    ],
   );
 
   // ===== WebSocket Connection =====
@@ -465,9 +779,15 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           sanitizedContacts.map((c) => ({
             id: c.id,
             username: c.username,
+            kind: c.kind,
+            ownerId: c.ownerId,
+            membershipCommitment: c.membershipCommitment,
+            memberIds: c.memberIds,
             status: c.status,
             publicKeyEcc: new Uint8Array(),
             publicKeyPqc: new Uint8Array(),
+            trustState: c.trustState,
+            trustWarning: c.trustWarning,
           })),
         );
       }
@@ -475,19 +795,53 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
     store.getAllMessages().then((storedMessages) => {
       if (storedMessages.length > 0) {
         setMessages(
-          storedMessages.map((m) => ({
-            id: m.id,
-            senderId: m.senderId,
-            recipientId: m.recipientId,
-            content: m.content,
-            timestamp: m.timestamp,
-            isPqcProtected: m.isPqcProtected,
-            status: m.status === "sending" ? "error" : m.status,
-          })),
+          storedMessages.map((m) => {
+            const base: Message = {
+              id: m.id,
+              senderId: m.senderId,
+              recipientId: m.recipientId,
+              conversationId: m.conversationId,
+              groupId: m.groupId,
+              groupName: m.groupName,
+              groupMemberIds: m.groupMemberIds,
+              groupEventType: m.groupEventType,
+              groupMembershipCommitment: m.groupMembershipCommitment,
+              deliveredByUserIds: m.deliveredByUserIds,
+              readByUserIds: m.readByUserIds,
+              content: m.content,
+              timestamp: m.timestamp,
+              isPqcProtected: m.isPqcProtected,
+              status: m.status === "sending" ? "error" : m.status,
+            };
+
+            return {
+              ...base,
+              conversationId: resolveConversationId(base, user.id),
+            };
+          }),
         );
       }
     });
   }, [isAuthenticated, user]);
+
+  useEffect(() => {
+    if (!isAuthenticated || !user) return;
+
+    let disposed = false;
+    const loadGroups = async () => {
+      const groups = await listGroups();
+      if (disposed) return;
+
+      for (const group of groups) {
+        upsertGroupContact(group);
+      }
+    };
+
+    void loadGroups();
+    return () => {
+      disposed = true;
+    };
+  }, [isAuthenticated, upsertGroupContact, user]);
 
   // Cleanup sessions on unmount
   useEffect(() => {
@@ -501,7 +855,30 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
     async (content: string) => {
       if (!activeContact || !user || !content.trim()) return;
 
-      if (activeContact.id === user.id) {
+      const targetIsGroup = isGroupContact(activeContact);
+
+      if (!targetIsGroup && activeContact.trustState === "changed") {
+        window.alert(
+          activeContact.trustWarning ??
+            "Security warning: contact keys changed. Messaging is blocked until you re-verify the contact.",
+        );
+        return;
+      }
+
+      if (!targetIsGroup && activeContact.trustState === "unverified") {
+        const confirmed = window.confirm(
+          activeContact.trustWarning ??
+            "This contact has not been fully verified yet. Continue sending?",
+        );
+        if (!confirmed) {
+          return;
+        }
+
+        await markContactTrusted(activeContact.id, activeContact.username);
+        setContactTrustInMemory(activeContact.id, "trusted", undefined);
+      }
+
+      if (!targetIsGroup && activeContact.id === user.id) {
         console.warn("[Messenger] Blocking self-message");
         return;
       }
@@ -513,12 +890,38 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
 
       const messageId = generateRandomId();
       const timestamp = Date.now();
+      const conversationId = activeContact.id;
+
+      const groupMemberIds = targetIsGroup
+        ? Array.from(new Set([...(activeContact.memberIds ?? []), user.id]))
+        : undefined;
+
+      const groupRecipients = targetIsGroup
+        ? (groupMemberIds?.filter((memberId) => memberId !== user.id) ?? [])
+        : [];
+
+      if (targetIsGroup && groupRecipients.length === 0) {
+        window.alert(
+          "Group has no other members. Add participants before sending messages.",
+        );
+        return;
+      }
 
       // Optimistic update
       const newMessage: Message = {
         id: messageId,
         senderId: user.id,
-        recipientId: activeContact.id,
+        recipientId: conversationId,
+        conversationId,
+        groupId: targetIsGroup ? activeContact.id : undefined,
+        groupName: targetIsGroup ? activeContact.username : undefined,
+        groupMemberIds,
+        groupEventType: targetIsGroup ? "group_message" : undefined,
+        groupMembershipCommitment: targetIsGroup
+          ? activeContact.membershipCommitment
+          : undefined,
+        deliveredByUserIds: targetIsGroup ? [] : undefined,
+        readByUserIds: targetIsGroup ? [] : undefined,
         content,
         timestamp,
         isPqcProtected: true,
@@ -530,11 +933,51 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       const store = getKeyStore();
       const storedMsg: StoredMessage = {
         ...newMessage,
-        peerId: activeContact.id,
+        peerId: conversationId,
+        conversationId,
       };
       store.storeMessage(storedMsg).catch(console.error);
+
       try {
         retryCountByMessage.current.set(messageId, 0);
+
+        if (targetIsGroup) {
+          const results = await Promise.allSettled(
+            groupRecipients.map((recipientId) =>
+              transmitOutboundMessage(
+                content,
+                recipientId,
+                messageId,
+                timestamp,
+                false,
+                {
+                  groupId: activeContact.id,
+                  groupName: activeContact.username,
+                  groupMemberIds: groupMemberIds ?? [],
+                  groupEventType: "group_message",
+                  groupMembershipCommitment: activeContact.membershipCommitment,
+                },
+              ),
+            ),
+          );
+
+          const hasFailures = results.some(
+            (result) => result.status === "rejected",
+          );
+          if (hasFailures) {
+            throw new Error("One or more group recipients failed");
+          }
+
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === messageId && m.status === "sending"
+                ? { ...m, status: "sent" }
+                : m,
+            ),
+          );
+          return;
+        }
+
         await transmitOutboundMessage(
           content,
           activeContact.id,
@@ -549,7 +992,13 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         );
       }
     },
-    [activeContact, user, connectionStatus, transmitOutboundMessage],
+    [
+      activeContact,
+      user,
+      connectionStatus,
+      transmitOutboundMessage,
+      setContactTrustInMemory,
+    ],
   );
 
   // ===== Add Contact =====
@@ -576,17 +1025,36 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       const bundle = await getPreKeyBundle(userInfo.userId);
+      if (!bundle) {
+        console.warn("[Messenger] Failed to fetch prekey bundle:", username);
+        return false;
+      }
+
+      const trust = await ensureContactTrustFromBundle(
+        userInfo.userId,
+        bundle,
+        userInfo.username,
+      );
+
+      if (!trust.trusted) {
+        window.alert(
+          trust.reason ??
+            "Security warning: contact keys changed. Contact not added.",
+        );
+        return false;
+      }
+
+      const storedContact = await getKeyStore().getContact(userInfo.userId);
 
       const newContact: Contact = {
         id: userInfo.userId,
         username: userInfo.username,
+        kind: "direct",
         status: "offline",
-        publicKeyEcc: bundle
-          ? base64ToBytes(bundle.identityKeyEccPub)
-          : new Uint8Array(),
-        publicKeyPqc: bundle
-          ? base64ToBytes(bundle.identityKeyPqcPub)
-          : new Uint8Array(),
+        publicKeyEcc: base64ToBytes(bundle.identityKeyEccPub),
+        publicKeyPqc: base64ToBytes(bundle.identityKeyPqcPub),
+        trustState: storedContact?.trustState ?? "trusted",
+        trustWarning: storedContact?.trustWarning,
       };
 
       setContacts((prev) => [...prev, newContact]);
@@ -597,7 +1065,14 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         .storeContact({
           id: newContact.id,
           username: newContact.username,
+          kind: "direct",
           status: "offline",
+          identityKeyEccFingerprint: storedContact?.identityKeyEccFingerprint,
+          identityKeyPqcFingerprint: storedContact?.identityKeyPqcFingerprint,
+          signingKeyFingerprint: storedContact?.signingKeyFingerprint,
+          trustState: newContact.trustState,
+          trustWarning: newContact.trustWarning,
+          trustUpdatedAt: storedContact?.trustUpdatedAt ?? Date.now(),
         })
         .catch(console.error);
 
@@ -607,16 +1082,175 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
     [contacts, user],
   );
 
+  // ===== Add Group =====
+  const addGroup = useCallback(
+    async (groupName: string, usernames: string[]): Promise<boolean> => {
+      if (!user) return false;
+
+      const normalizedName = groupName.trim();
+      if (!normalizedName) {
+        return false;
+      }
+
+      const candidateUsernames = Array.from(
+        new Set(
+          usernames
+            .map((value) => value.trim())
+            .filter(Boolean)
+            .filter(
+              (value) => value.toLowerCase() !== user.username.toLowerCase(),
+            ),
+        ),
+      );
+
+      if (candidateUsernames.length < 2) {
+        return false;
+      }
+
+      const resolvedUsers = await Promise.all(
+        candidateUsernames.map((username) => findUserByUsername(username)),
+      );
+
+      const validMembers = resolvedUsers
+        .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+        .filter((entry) => entry.userId !== user.id);
+
+      if (validMembers.length < 2) {
+        return false;
+      }
+
+      const memberIds = Array.from(
+        new Set([user.id, ...validMembers.map((entry) => entry.userId)]),
+      );
+
+      const created = await apiCreateGroup(
+        normalizedName,
+        memberIds.filter((memberId) => memberId !== user.id),
+      );
+      if (!created) {
+        return false;
+      }
+
+      upsertGroupContact(created);
+      setActiveContact({
+        id: created.groupId,
+        username: created.name,
+        kind: "group",
+        ownerId: created.ownerId,
+        membershipCommitment: created.membershipCommitment,
+        memberIds: uniqueIds(created.memberUserIds),
+        status: "online",
+        publicKeyEcc: new Uint8Array(),
+        publicKeyPqc: new Uint8Array(),
+      });
+
+      return true;
+    },
+    [user, upsertGroupContact],
+  );
+
+  const addGroupMember = useCallback(
+    async (groupId: string, username: string): Promise<boolean> => {
+      if (!user) return false;
+
+      const normalizedUsername = username.trim();
+      if (!normalizedUsername) return false;
+
+      if (normalizedUsername.toLowerCase() === user.username.toLowerCase()) {
+        return false;
+      }
+
+      const target = await findUserByUsername(normalizedUsername);
+      if (!target) return false;
+
+      const updated = await apiAddGroupMember(groupId, target.userId);
+      if (!updated) return false;
+
+      upsertGroupContact(updated);
+      if (activeContact?.id === groupId) {
+        setActiveContact((prev) =>
+          prev && prev.id === groupId
+            ? {
+                ...prev,
+                ownerId: updated.ownerId,
+                membershipCommitment: updated.membershipCommitment,
+                memberIds: uniqueIds(updated.memberUserIds),
+              }
+            : prev,
+        );
+      }
+      return true;
+    },
+    [activeContact?.id, upsertGroupContact, user],
+  );
+
+  const removeGroupMember = useCallback(
+    async (groupId: string, userId: string): Promise<boolean> => {
+      if (!user) return false;
+
+      const updated = await apiRemoveGroupMember(groupId, userId);
+      if (!updated) {
+        return false;
+      }
+
+      const stillMember = updated.memberUserIds.includes(user.id);
+      if (!stillMember) {
+        setContacts((prev) => prev.filter((contact) => contact.id !== groupId));
+        if (activeContact?.id === groupId) {
+          setActiveContact(null);
+        }
+        await getKeyStore().deleteContact(groupId).catch(console.error);
+        return true;
+      }
+
+      upsertGroupContact(updated);
+      if (activeContact?.id === groupId) {
+        setActiveContact((prev) =>
+          prev && prev.id === groupId
+            ? {
+                ...prev,
+                ownerId: updated.ownerId,
+                membershipCommitment: updated.membershipCommitment,
+                memberIds: uniqueIds(updated.memberUserIds),
+              }
+            : prev,
+        );
+      }
+      return true;
+    },
+    [activeContact?.id, upsertGroupContact, user],
+  );
+
   // ===== Typing Indicator =====
   const sendTypingIndicator = useCallback(() => {
-    if (!activeContact) return;
+    if (!activeContact || !user) return;
+
+    if (isGroupContact(activeContact)) {
+      const recipients = (activeContact.memberIds ?? []).filter(
+        (memberId) => memberId !== user.id,
+      );
+
+      for (const recipientId of recipients) {
+        const msg: WsOutgoingMessage = {
+          type: "typing",
+          messageId: "",
+          recipientId,
+          groupId: activeContact.id,
+          groupName: activeContact.username,
+          groupMemberIds: activeContact.memberIds,
+        };
+        send(JSON.stringify(msg));
+      }
+      return;
+    }
+
     const msg: WsOutgoingMessage = {
       type: "typing",
       messageId: "",
       recipientId: activeContact.id,
     };
     send(JSON.stringify(msg));
-  }, [activeContact, send]);
+  }, [activeContact, send, user]);
 
   // ===== Read Receipt =====
   const sendReadReceipt = useCallback(
@@ -640,6 +1274,9 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         setActiveContact,
         sendMessage,
         addContact,
+        addGroup,
+        addGroupMember,
+        removeGroupMember,
         connectionStatus,
         typingUsers,
         sendTypingIndicator,
@@ -651,6 +1288,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 };
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useMessenger = () => {
   const context = useContext(MessengerContext);
   if (context === undefined) {

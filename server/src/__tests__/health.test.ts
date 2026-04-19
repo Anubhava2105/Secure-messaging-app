@@ -1,10 +1,14 @@
 import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import path from "path";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { getAvailablePort } from "./helpers/port.js";
 
-const TEST_PORT = 3199 + Math.floor(Math.random() * 1000);
-const BASE_URL = `http://127.0.0.1:${TEST_PORT}`;
-const TEST_DB_PATH = `data/test-${TEST_PORT}-${process.pid}-${Date.now()}.db`;
+let TEST_PORT = 0;
+let TEST_DB_PATH = "";
+
+function baseUrl(): string {
+  return `http://127.0.0.1:${TEST_PORT}`;
+}
 
 let serverProcess: ChildProcessWithoutNullStreams | null = null;
 
@@ -13,7 +17,7 @@ async function waitForHealth(timeoutMs = 15000): Promise<void> {
 
   while (Date.now() - started < timeoutMs) {
     try {
-      const res = await fetch(`${BASE_URL}/health`);
+      const res = await fetch(`${baseUrl()}/health`);
       if (res.ok) return;
     } catch {
       // ignore until timeout
@@ -26,6 +30,9 @@ async function waitForHealth(timeoutMs = 15000): Promise<void> {
 
 describe("server integration", () => {
   beforeAll(async () => {
+    TEST_PORT = await getAvailablePort();
+    TEST_DB_PATH = `data/test-${TEST_PORT}-${process.pid}-${Date.now()}.db`;
+
     const serverRoot = path.resolve(process.cwd());
     const npxBin = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -60,7 +67,7 @@ describe("server integration", () => {
   });
 
   it("responds to health endpoint", async () => {
-    const res = await fetch(`${BASE_URL}/health`);
+    const res = await fetch(`${baseUrl()}/health`);
     expect(res.status).toBe(200);
 
     const body = (await res.json()) as { status: string };

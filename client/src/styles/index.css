@@ -121,6 +121,25 @@ input {
   letter-spacing: 0.5px;
 }
 
+.trust-badge {
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.trust-badge-warn {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.trust-badge-alert {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
 /* Gradient text - now uses green */
 .gradient-text {
   color: var(--accent-color);

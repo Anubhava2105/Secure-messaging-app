@@ -12,6 +12,7 @@ import ChatArea from "./components/ChatArea";
 import EmptyChatState from "./components/EmptyChatState";
 import SecurityDetails from "./components/SecurityDetails";
 import AddContactModal from "./components/AddContactModal";
+import GroupMembersModal from "./components/GroupMembersModal";
 import "./styles/App.css";
 
 // ===== Main App Content =====
@@ -24,6 +25,9 @@ const AppContent = () => {
     messages,
     sendMessage,
     addContact,
+    addGroup,
+    addGroupMember,
+    removeGroupMember,
     connectionStatus,
     typingUsers,
     sendTypingIndicator,
@@ -31,6 +35,7 @@ const AppContent = () => {
 
   const [isSecurityModalOpen, setSecurityModalOpen] = useState(false);
   const [isAddContactModalOpen, setAddContactModalOpen] = useState(false);
+  const [isGroupMembersModalOpen, setGroupMembersModalOpen] = useState(false);
 
   if (isLoading) {
     return (
@@ -61,10 +66,12 @@ const AppContent = () => {
           {activeContact ? (
             <ChatArea
               activeContact={activeContact}
+              contacts={contacts}
               messages={messages}
               currentUserId={user?.id}
               onSendMessage={sendMessage}
               onOpenSecurityDetails={() => setSecurityModalOpen(true)}
+              onOpenGroupMembers={() => setGroupMembersModalOpen(true)}
               isContactTyping={typingUsers.has(activeContact.id)}
               onTyping={sendTypingIndicator}
             />
@@ -91,6 +98,17 @@ const AppContent = () => {
         isOpen={isAddContactModalOpen}
         onClose={() => setAddContactModalOpen(false)}
         onAdd={addContact}
+        onAddGroup={addGroup}
+      />
+
+      <GroupMembersModal
+        isOpen={isGroupMembersModalOpen}
+        onClose={() => setGroupMembersModalOpen(false)}
+        group={activeContact}
+        contacts={contacts}
+        currentUserId={user?.id}
+        onAddMember={addGroupMember}
+        onRemoveMember={removeGroupMember}
       />
     </>
   );

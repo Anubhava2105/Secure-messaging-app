@@ -13,6 +13,23 @@ export const AES_GCM_KEY_SIZE = 32; // 256 bits
 export const AES_GCM_NONCE_SIZE = 12; // 96 bits (recommended by NIST)
 export const AES_GCM_TAG_SIZE = 16; // 128 bits
 
+function normalizeAadInput(aad?: Uint8Array): ArrayBuffer | undefined {
+  const aadValue: unknown = aad;
+  if (aadValue == null) {
+    return undefined;
+  }
+  if (typeof aadValue === "string") {
+    return new TextEncoder().encode(aadValue).buffer;
+  }
+  if (aadValue instanceof Uint8Array) {
+    return toArrayBuffer(aadValue);
+  }
+  if (aadValue instanceof ArrayBuffer) {
+    return aadValue;
+  }
+  return undefined;
+}
+
 /**
  * AES-GCM-256 cipher implementation.
  */
@@ -41,20 +58,7 @@ export class AesGcmCipher implements ICipherAlgorithm {
     this.validateNonce(nonce);
 
     const cryptoKey = await this.importKey(key);
-
-    // Ensure AAD is an ArrayBuffer (BufferSource)
-    let aadBuffer: ArrayBuffer | undefined = undefined;
-    const anyAad = aad as any;
-    if (anyAad) {
-      if (typeof anyAad === "string") {
-        const encoder = new TextEncoder();
-        aadBuffer = encoder.encode(anyAad).buffer;
-      } else if (anyAad instanceof Uint8Array) {
-        aadBuffer = toArrayBuffer(anyAad);
-      } else if (anyAad instanceof ArrayBuffer) {
-        aadBuffer = anyAad;
-      }
-    }
+    const aadBuffer = normalizeAadInput(aad);
 
     const algorithm: AesGcmParams = {
       name: "AES-GCM",
@@ -99,19 +103,7 @@ export class AesGcmCipher implements ICipherAlgorithm {
     }
 
     const cryptoKey = await this.importKey(key);
-
-    // Ensure AAD is an ArrayBuffer (BufferSource) for SubtleCrypto compatibility.
-    let aadBuffer: ArrayBuffer | undefined = undefined;
-    const anyAad = aad as any;
-    if (anyAad) {
-      if (typeof anyAad === "string") {
-        aadBuffer = new TextEncoder().encode(anyAad).buffer;
-      } else if (anyAad instanceof Uint8Array) {
-        aadBuffer = toArrayBuffer(anyAad);
-      } else if (anyAad instanceof ArrayBuffer) {
-        aadBuffer = anyAad;
-      }
-    }
+    const aadBuffer = normalizeAadInput(aad);
 
     try {
       const algorithm: AesGcmParams = {

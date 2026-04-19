@@ -8,13 +8,14 @@
  * - All stored data is encrypted end-to-end
  */
 
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyWebSocket from "@fastify/websocket";
 import fastifyCors from "@fastify/cors";
 import fastifyJwt from "@fastify/jwt";
 import fastifyRateLimit from "@fastify/rate-limit";
 import { prekeyRoutes } from "./routes/prekeys.js";
 import { userRoutes } from "./routes/users.js";
+import { groupRoutes } from "./routes/groups.js";
 import { messageHandler } from "./websocket/handler.js";
 
 // JWT secret — use env var in production
@@ -27,8 +28,12 @@ const corsOrigins = (process.env.CORS_ORIGINS ?? "")
 
 if (isProduction && JWT_SECRET === "dev-secret-change-in-production") {
   throw new Error(
-    "JWT_SECRET must be set in production; refusing to start with default secret"
+    "JWT_SECRET must be set in production; refusing to start with default secret",
   );
+}
+
+if (isProduction && corsOrigins.length === 0) {
+  throw new Error("CORS_ORIGINS must be explicitly configured in production");
 }
 
 const server = Fastify({
@@ -64,13 +69,16 @@ await server.register(fastifyRateLimit, {
 });
 
 // Reusable auth decorator
-server.decorate("authenticate", async function (request: any, reply: any) {
+server.decorate(
+  "authenticate",
+  async function (request: FastifyRequest, reply: FastifyReply) {
   try {
     await request.jwtVerify();
-  } catch (err) {
+  } catch (_err) {
     reply.code(401).send({ error: "Unauthorized" });
   }
-});
+  },
+);
 
 // Health check endpoint
 server.get("/health", async () => {
@@ -80,6 +88,7 @@ server.get("/health", async () => {
 // API routes
 server.register(userRoutes, { prefix: "/api/v1" });
 server.register(prekeyRoutes, { prefix: "/api/v1" });
+server.register(groupRoutes, { prefix: "/api/v1" });
 
 // WebSocket handler for real-time messaging
 server.register(async function (fastify) {

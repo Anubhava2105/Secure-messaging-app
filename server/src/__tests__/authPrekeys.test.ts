@@ -1,10 +1,14 @@
 import { spawn, ChildProcessWithoutNullStreams } from "child_process";
 import path from "path";
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { getAvailablePort } from "./helpers/port.js";
 
-const TEST_PORT = 3201 + Math.floor(Math.random() * 1000);
-const BASE_URL = `http://127.0.0.1:${TEST_PORT}`;
-const TEST_DB_PATH = `data/test-${TEST_PORT}-${process.pid}-${Date.now()}.db`;
+let TEST_PORT = 0;
+let TEST_DB_PATH = "";
+
+function baseUrl(): string {
+  return `http://127.0.0.1:${TEST_PORT}`;
+}
 
 let serverProcess: ChildProcessWithoutNullStreams | null = null;
 
@@ -13,7 +17,7 @@ async function waitForHealth(timeoutMs = 15000): Promise<void> {
 
   while (Date.now() - started < timeoutMs) {
     try {
-      const res = await fetch(`${BASE_URL}/health`);
+      const res = await fetch(`${baseUrl()}/health`);
       if (res.ok) return;
     } catch {
       // ignore until timeout
@@ -35,6 +39,9 @@ describe("auth + prekeys integration", () => {
   let token = "";
 
   beforeAll(async () => {
+    TEST_PORT = await getAvailablePort();
+    TEST_DB_PATH = `data/test-${TEST_PORT}-${process.pid}-${Date.now()}.db`;
+
     const serverRoot = path.resolve(process.cwd());
     const npxBin = process.platform === "win32" ? "npx.cmd" : "npx";
 
@@ -71,7 +78,7 @@ describe("auth + prekeys integration", () => {
   it("registers, logs in, and manages prekeys", async () => {
     const registerPayload = {
       username: `alice-${Date.now()}`,
-      passwordHash: "f".repeat(96),
+      password: "correct-horse-battery-staple",
       identityKeyEccPub: "ecc-pub",
       identityKeyPqcPub: "pqc-pub",
       signingKeyPub: "sign-pub",
@@ -93,7 +100,7 @@ describe("auth + prekeys integration", () => {
       ],
     };
 
-    const registerRes = await fetch(`${BASE_URL}/api/v1/register`, {
+    const registerRes = await fetch(`${baseUrl()}/api/v1/register`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(registerPayload),
@@ -108,12 +115,12 @@ describe("auth + prekeys integration", () => {
     expect(typeof registered.token).toBe("string");
     expect(registered.token.length).toBeGreaterThan(10);
 
-    const loginRes = await fetch(`${BASE_URL}/api/v1/login`, {
+    const loginRes = await fetch(`${baseUrl()}/api/v1/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         username: registerPayload.username,
-        passwordHash: registerPayload.passwordHash,
+        password: registerPayload.password,
       }),
     });
 
@@ -123,7 +130,7 @@ describe("auth + prekeys integration", () => {
     expect(typeof token).toBe("string");
     expect(token.length).toBeGreaterThan(10);
 
-    const prekeyCountRes = await fetch(`${BASE_URL}/api/v1/prekeys/count`, {
+    const prekeyCountRes = await fetch(`${baseUrl()}/api/v1/prekeys/count`, {
       headers: authHeaders(token),
     });
     expect(prekeyCountRes.status).toBe(200);
@@ -131,7 +138,7 @@ describe("auth + prekeys integration", () => {
     const prekeyCount = (await prekeyCountRes.json()) as { count: number };
     expect(prekeyCount.count).toBe(2);
 
-    const addPrekeysRes = await fetch(`${BASE_URL}/api/v1/prekeys`, {
+    const addPrekeysRes = await fetch(`${baseUrl()}/api/v1/prekeys`, {
       method: "POST",
       headers: authHeaders(token),
       body: JSON.stringify({
@@ -144,7 +151,7 @@ describe("auth + prekeys integration", () => {
 
     expect(addPrekeysRes.status).toBe(200);
 
-    const updatedCountRes = await fetch(`${BASE_URL}/api/v1/prekeys/count`, {
+    const updatedCountRes = await fetch(`${baseUrl()}/api/v1/prekeys/count`, {
       headers: authHeaders(token),
     });
     expect(updatedCountRes.status).toBe(200);

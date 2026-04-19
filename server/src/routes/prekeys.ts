@@ -20,11 +20,48 @@ const prekeyUploadSchema = z.object({
       z.object({
         id: z.number().int().nonnegative(),
         publicKey: z.string().min(1),
-      })
+      }),
     )
     .min(1)
     .max(100),
 });
+
+type PrekeyFetchState = {
+  windowStart: number;
+  count: number;
+};
+
+const PREKEY_FETCH_WINDOW_MS = Math.max(
+  1_000,
+  Number.parseInt(process.env.PREKEY_FETCH_WINDOW_MS ?? "60000", 10) || 60_000,
+);
+const PREKEY_FETCH_MAX_PER_WINDOW = Math.max(
+  1,
+  Number.parseInt(process.env.PREKEY_FETCH_MAX_PER_WINDOW ?? "30", 10) || 30,
+);
+
+const prekeyFetchAttempts = new Map<string, PrekeyFetchState>();
+
+function prekeyFetchKey(requesterId: string, targetUserId: string): string {
+  return `${requesterId}:${targetUserId}`;
+}
+
+function isPrekeyFetchRateLimited(
+  requesterId: string,
+  targetUserId: string,
+): boolean {
+  const now = Date.now();
+  const key = prekeyFetchKey(requesterId, targetUserId);
+  const existing = prekeyFetchAttempts.get(key);
+
+  if (!existing || now - existing.windowStart > PREKEY_FETCH_WINDOW_MS) {
+    prekeyFetchAttempts.set(key, { windowStart: now, count: 1 });
+    return false;
+  }
+
+  existing.count += 1;
+  return existing.count > PREKEY_FETCH_MAX_PER_WINDOW;
+}
 
 export async function prekeyRoutes(fastify: FastifyInstance): Promise<void> {
   /**
@@ -37,9 +74,10 @@ export async function prekeyRoutes(fastify: FastifyInstance): Promise<void> {
     Params: { userId: string };
   }>(
     "/users/:userId/prekeys",
+    { onRequest: [fastify.authenticate] },
     async (
       request: FastifyRequest<{ Params: { userId: string } }>,
-      reply: FastifyReply
+      reply: FastifyReply,
     ) => {
       const parsedParams = userIdParamsSchema.safeParse(request.params);
       if (!parsedParams.success) {
@@ -49,6 +87,17 @@ export async function prekeyRoutes(fastify: FastifyInstance): Promise<void> {
         });
       }
       const { userId } = parsedParams.data;
+      const requesterId = request.user.userId;
+
+      if (requesterId === userId) {
+        return reply.code(400).send({ error: "Cannot fetch your own prekeys" });
+      }
+
+      if (isPrekeyFetchRateLimited(requesterId, userId)) {
+        return reply
+          .code(429)
+          .send({ error: "Too many prekey fetches. Slow down." });
+      }
 
       const user = await store.getUserById(userId);
       if (!user) {
@@ -73,7 +122,7 @@ export async function prekeyRoutes(fastify: FastifyInstance): Promise<void> {
         const remaining = await store.getOneTimePrekeyCount(userId);
         fastify.log.info(
           { userId, prekeyId: oneTimePrekey.id, remaining },
-          "One-time prekey consumed"
+          "One-time prekey consumed",
         );
 
         // Warn if running low
@@ -83,7 +132,7 @@ export async function prekeyRoutes(fastify: FastifyInstance): Promise<void> {
       }
 
       return bundle;
-    }
+    },
   );
 
   /**
@@ -112,11 +161,11 @@ export async function prekeyRoutes(fastify: FastifyInstance): Promise<void> {
       const count = await store.getOneTimePrekeyCount(userId);
       fastify.log.info(
         { userId, added: oneTimePrekeys.length, total: count },
-        "Prekeys added"
+        "Prekeys added",
       );
 
       return { added: oneTimePrekeys.length, total: count };
-    }
+    },
   );
 
   /**
@@ -131,6 +180,6 @@ export async function prekeyRoutes(fastify: FastifyInstance): Promise<void> {
 
       const count = await store.getOneTimePrekeyCount(userId);
       return { count };
-    }
+    },
   );
 }

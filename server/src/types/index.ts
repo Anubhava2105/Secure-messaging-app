@@ -6,8 +6,8 @@
 /** User registration request */
 export interface RegisterUserRequest {
   username: string;
-  /** SHA-384 hash of password (password never sent in plaintext) */
-  passwordHash: string;
+  /** User password (hashed server-side with per-user salt) */
+  password: string;
   /** ECC identity public key (Base64, 97 bytes) */
   identityKeyEccPub: string;
   /** PQC identity public key (Base64, 1184 bytes) */
@@ -62,6 +62,7 @@ export interface PreKeyBundleResponse {
 export interface UserRecord {
   id: string;
   username: string;
+  passwordSalt: string;
   passwordHash: string;
   identityKeyEccPub: string;
   identityKeyPqcPub: string;
@@ -72,6 +73,19 @@ export interface UserRecord {
   createdAt: number;
   lastSeen: number;
 }
+
+/** Group record in storage */
+export interface GroupRecord {
+  id: string;
+  name: string;
+  ownerId: string;
+  memberUserIds: string[];
+  createdAt: number;
+  updatedAt: number;
+  membershipCommitment: string;
+}
+
+export type GroupEventType = "group_message" | "group_membership";
 
 /** WebSocket message types */
 export enum WsMessageType {
@@ -89,6 +103,16 @@ export interface WsClientMessage {
   type: WsMessageType;
   messageId: string;
   recipientId?: string;
+  /** Group conversation ID for fan-out group messages */
+  groupId?: string;
+  /** Optional display name for group conversation */
+  groupName?: string;
+  /** Optional participant user IDs for group membership hydration */
+  groupMemberIds?: string[];
+  /** Optional group event category for server-side canonicalization */
+  groupEventType?: GroupEventType;
+  /** Optional membership commitment pinned by sender at encryption time */
+  groupMembershipCommitment?: string;
   /** Base64 encoded encrypted blob */
   encryptedBlob?: string;
   /** Optional serialized handshake payload for first-message session establishment */
@@ -108,6 +132,16 @@ export interface WsServerMessage {
   type: WsMessageType;
   messageId: string;
   senderId?: string;
+  /** Group conversation ID for fan-out group messages */
+  groupId?: string;
+  /** Optional display name for group conversation */
+  groupName?: string;
+  /** Optional participant user IDs for group membership hydration */
+  groupMemberIds?: string[];
+  /** Canonical group event category assigned by relay */
+  groupEventType?: GroupEventType;
+  /** Canonical membership commitment assigned by relay */
+  groupMembershipCommitment?: string;
   /** Base64 encoded encrypted blob */
   encryptedBlob?: string;
   /** Optional serialized handshake payload */

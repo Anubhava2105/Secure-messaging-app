@@ -30,6 +30,10 @@ import { getKeyStore } from "../crypto/storage/keystore";
 import { saveSession, getSessionAsync } from "./SessionManager";
 import { getPreKeyBundle } from "./api";
 import type { PreKeyBundleDTO } from "./api";
+import {
+  ensureContactTrustFromBundle,
+  verifyIncomingHandshakeIdentity,
+} from "./TrustManager";
 
 /** In-memory local identity (generated once per session) */
 let localIdentity: LocalIdentity | null = null;
@@ -44,7 +48,7 @@ async function importEcdhPrivateKey(jwk: JsonWebKey): Promise<CryptoKey> {
     jwk,
     { name: "ECDH", namedCurve: "P-384" },
     true,
-    ["deriveBits"]
+    ["deriveBits"],
   );
 }
 
@@ -54,7 +58,7 @@ async function importEcdhPublicKey(jwk: JsonWebKey): Promise<CryptoKey> {
     jwk,
     { name: "ECDH", namedCurve: "P-384" },
     true,
-    []
+    [],
   );
 }
 
@@ -64,7 +68,7 @@ async function importEcdsaPrivateKey(jwk: JsonWebKey): Promise<CryptoKey> {
     jwk,
     { name: "ECDSA", namedCurve: "P-384" },
     true,
-    ["sign"]
+    ["sign"],
   );
 }
 
@@ -74,20 +78,20 @@ async function importEcdsaPublicKey(jwk: JsonWebKey): Promise<CryptoKey> {
     jwk,
     { name: "ECDSA", namedCurve: "P-384" },
     true,
-    ["verify"]
+    ["verify"],
   );
 }
 
 async function ensureOneTimePrekeyLoaded(
   identity: LocalIdentity,
-  oneTimePrekeyId: number
+  oneTimePrekeyId: number,
 ): Promise<void> {
   if (identity.oneTimePrekeysEcc.has(oneTimePrekeyId)) return;
 
   const stored = await getKeyStore().getSignedPrekey(
     oneTimePrekeyId,
     "ecc",
-    identity.userId
+    identity.userId,
   );
   if (!stored) return;
 
@@ -106,7 +110,7 @@ async function ensureOneTimePrekeyLoaded(
  * This creates the full key material needed for X3DH.
  */
 export async function getOrCreateLocalIdentity(
-  userId: string
+  userId: string,
 ): Promise<LocalIdentity> {
   if (localIdentity && localIdentity.userId === userId) {
     return localIdentity;
@@ -151,27 +155,27 @@ export async function getOrCreateLocalIdentity(
   }
 
   const eccIdentityPrivate = await importEcdhPrivateKey(
-    persistedIdentity.eccIdentityPrivate
+    persistedIdentity.eccIdentityPrivate,
   );
   const eccIdentityPublic = await importEcdhPublicKey(
-    persistedIdentity.eccIdentityPublic
+    persistedIdentity.eccIdentityPublic,
   );
   const signingPrivate = await importEcdsaPrivateKey(
-    persistedIdentity.signingPrivate
+    persistedIdentity.signingPrivate,
   );
   const signingPublic = await importEcdsaPublicKey(
-    persistedIdentity.signingPublic
+    persistedIdentity.signingPublic,
   );
 
   const eccIdentityPublicRaw = new Uint8Array(
-    await crypto.subtle.exportKey("raw", eccIdentityPublic)
+    await crypto.subtle.exportKey("raw", eccIdentityPublic),
   );
   const signingPublicRaw = new Uint8Array(
-    await crypto.subtle.exportKey("raw", signingPublic)
+    await crypto.subtle.exportKey("raw", signingPublic),
   );
 
   const eccSignedPrekeyPrivate = await importEcdhPrivateKey(
-    signedPrekeyEcc.privateKey
+    signedPrekeyEcc.privateKey,
   );
 
   localIdentity = {
@@ -258,7 +262,7 @@ function dtoToPreKeyBundle(dto: PreKeyBundleDTO): PreKeyBundle {
  */
 export async function initiateHandshakeWithContact(
   myUserId: string,
-  contactId: string
+  contactId: string,
 ): Promise<{ session: Session; handshakeData: string } | null> {
   try {
     // 1. Get local identity
@@ -269,6 +273,11 @@ export async function initiateHandshakeWithContact(
     if (!bundleDTO) {
       console.warn("[Handshake] Could not fetch prekey bundle for:", contactId);
       return null;
+    }
+
+    const trust = await ensureContactTrustFromBundle(contactId, bundleDTO);
+    if (!trust.trusted) {
+      throw new Error(trust.reason ?? "Contact trust verification failed");
     }
 
     // 3. Convert DTO to crypto format
@@ -304,7 +313,7 @@ export async function initiateHandshakeWithContact(
 export async function handleIncomingHandshake(
   myUserId: string,
   senderId: string,
-  handshakeData: string
+  handshakeData: string,
 ): Promise<Session | null> {
   try {
     // 1. Get local identity
@@ -314,6 +323,16 @@ export async function handleIncomingHandshake(
     const serialized = base64ToBytes(handshakeData);
     const message: HandshakeMessage = deserializeHandshakeMessage(serialized);
 
+    const incomingTrust = await verifyIncomingHandshakeIdentity(
+      senderId,
+      message.identityKeyEcc,
+    );
+    if (!incomingTrust.trusted) {
+      throw new Error(
+        incomingTrust.reason ?? "Incoming handshake trust verification failed",
+      );
+    }
+
     if (message.oneTimePrekeyId !== 0) {
       await ensureOneTimePrekeyLoaded(identity, message.oneTimePrekeyId);
     }
@@ -322,7 +341,7 @@ export async function handleIncomingHandshake(
     const session = await respondToHandshake(
       identity,
       message.identityKeyEcc,
-      message
+      message,
     );
 
     // 4. Update session with real peer ID
@@ -336,7 +355,7 @@ export async function handleIncomingHandshake(
       await getKeyStore().deletePrekey(
         message.oneTimePrekeyId,
         "ecc",
-        identity.userId
+        identity.userId,
       );
     }
 
@@ -350,12 +369,11 @@ export async function handleIncomingHandshake(
 
 /**
  * Get or create a session with a contact.
- * Tries existing session first, then attempts handshake,
- * then falls back to dev session.
+ * Tries existing session first, then attempts handshake.
  */
 export async function ensureSession(
   myUserId: string,
-  contactId: string
+  contactId: string,
 ): Promise<Session | null> {
   // Check for existing session
   const existing = await getSessionAsync(contactId);
@@ -375,7 +393,7 @@ export async function ensureSession(
  */
 export async function ensureSessionForOutgoing(
   myUserId: string,
-  contactId: string
+  contactId: string,
 ): Promise<{ session: Session; handshakeData?: string } | null> {
   const existing = await getSessionAsync(contactId);
   if (existing) {

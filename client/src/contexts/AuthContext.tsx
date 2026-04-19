@@ -18,41 +18,30 @@ import {
   registerUser as apiRegisterUser,
   loginUser as apiLoginUser,
   setAuthToken,
-  getAuthToken,
   getPrekeyCount,
   uploadPrekeys,
 } from "../services/api";
-import { createPasswordHash } from "../utils/passwordHash";
+import {
+  setAtRestPassphrase,
+  clearAtRestPassphrase,
+} from "../crypto/storage/keystore";
 
 const PREKEY_THRESHOLD = 5;
 const PREKEY_BATCH_SIZE = 10;
 const PREKEY_CHECK_INTERVAL_MS = 5 * 60 * 1000;
 
 interface AuthContextType extends AuthState {
-  register: (username: string) => Promise<void>;
-  login: (username: string) => Promise<boolean>;
+  register: (username: string, password: string) => Promise<void>;
+  login: (username: string, password: string) => Promise<boolean>;
   logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-function tryGetUserIdFromToken(token: string | null): string | null {
-  if (!token) return null;
-  try {
-    const [, payload] = token.split(".");
-    if (!payload) return null;
-    const normalized = payload.replace(/-/g, "+").replace(/_/g, "/");
-    const json = JSON.parse(atob(normalized));
-    return typeof json?.userId === "string" ? json.userId : null;
-  } catch {
-    return null;
-  }
-}
-
 function toArrayBufferCopy(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
     bytes.byteOffset,
-    bytes.byteOffset + bytes.byteLength
+    bytes.byteOffset + bytes.byteLength,
   ) as ArrayBuffer;
 }
 
@@ -62,7 +51,7 @@ async function importEcdhPublicFromRaw(rawKey: Uint8Array): Promise<CryptoKey> {
     toArrayBufferCopy(rawKey),
     { name: "ECDH", namedCurve: "P-384" },
     true,
-    []
+    [],
   );
 }
 
@@ -77,24 +66,24 @@ async function storeLocalIdentity(
     signingPrivateKey: CryptoKey;
     pqcPublic: Uint8Array;
     pqcPrivate: Uint8Array;
-  }
+  },
 ): Promise<void> {
   const store = getKeyStore();
   const eccIdentityPublic = (await crypto.subtle.exportKey(
     "jwk",
-    await importEcdhPublicFromRaw(params.eccIdentityPublicRaw)
+    await importEcdhPublicFromRaw(params.eccIdentityPublicRaw),
   )) as JsonWebKey;
   const eccIdentityPrivate = (await crypto.subtle.exportKey(
     "jwk",
-    params.eccIdentityPrivateKey
+    params.eccIdentityPrivateKey,
   )) as JsonWebKey;
   const signingPublic = (await crypto.subtle.exportKey(
     "jwk",
-    await importSigningPublicKey(params.signingPublicRaw)
+    await importSigningPublicKey(params.signingPublicRaw),
   )) as JsonWebKey;
   const signingPrivate = (await crypto.subtle.exportKey(
     "jwk",
-    params.signingPrivateKey
+    params.signingPrivateKey,
   )) as JsonWebKey;
 
   await store.storeIdentity({
@@ -130,7 +119,7 @@ async function replenishPrekeys(userId: string): Promise<void> {
       return;
     }
     console.log(
-      `[Auth] Prekey count (${count}) below threshold, generating...`
+      `[Auth] Prekey count (${count}) below threshold, generating...`,
     );
     const prekeys: { id: number; publicKey: string }[] = [];
     for (let i = 0; i < PREKEY_BATCH_SIZE; i++) {
@@ -139,7 +128,7 @@ async function replenishPrekeys(userId: string): Promise<void> {
 
       const privateJwk = (await crypto.subtle.exportKey(
         "jwk",
-        kp.privateKey
+        kp.privateKey,
       )) as JsonWebKey;
 
       await store.storeSignedPrekey(
@@ -152,7 +141,7 @@ async function replenishPrekeys(userId: string): Promise<void> {
           signature: new ArrayBuffer(0),
           createdAt: Date.now(),
         },
-        userId
+        userId,
       );
 
       prekeys.push({
@@ -179,58 +168,22 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // Check for existing session on mount
   useEffect(() => {
-    const checkInitialAuth = async () => {
-      try {
-        const store = getKeyStore();
-        const token = getAuthToken();
-        const tokenUserId = tryGetUserIdFromToken(token);
-        let identity = tokenUserId
-          ? await store.getIdentity(tokenUserId)
-          : null;
-
-        // Backward compatibility: migrate legacy single-identity record.
-        if (!identity && tokenUserId) {
-          const legacyIdentity = await store.getIdentity("local-user");
-          if (legacyIdentity?.userId === tokenUserId) {
-            await store.storeIdentity({
-              ...legacyIdentity,
-              id: tokenUserId,
-            });
-            identity = legacyIdentity;
-          }
-        }
-
-        if (identity && token) {
-          setState({
-            user: { id: identity.userId, username: identity.username || "Me" },
-            isAuthenticated: true,
-            isLoading: false,
-            error: null,
-          });
-        } else {
-          // If token is missing/cleared, force logged-out state.
-          if (tokenUserId && !token) {
-            await store.clearAll();
-          }
-          setState((s) => ({ ...s, isLoading: false }));
-        }
-      } catch (err) {
-        console.error("Initial auth check failed:", err);
-        setState((s) => ({ ...s, isLoading: false }));
-      }
-    };
-
-    checkInitialAuth();
+    // At-rest decryption key is password-derived and session-only.
+    // Require explicit login on app startup.
+    setState((s) => ({ ...s, isLoading: false }));
   }, []);
 
   // ===== Register =====
-  const register = async (username: string) => {
+  const register = async (username: string, password: string) => {
     setState((s) => ({ ...s, isLoading: true, error: null }));
 
     try {
       const normalizedUsername = username.trim();
       if (!normalizedUsername) {
         throw new Error("Username is required");
+      }
+      if (password.length < 8) {
+        throw new Error("Password must be at least 8 characters");
       }
 
       // Generate identity keys
@@ -247,24 +200,21 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         signingKey.privateKey,
         prekeyEcc.publicKeyBytes,
         prekeyId,
-        timestamp
+        timestamp,
       );
       const prekeyPqc = await generatePqcKeypair();
       const pqcPrekeySignature = await signPrekey(
         signingKey.privateKey,
         prekeyPqc.publicKey,
         prekeyId,
-        timestamp
+        timestamp,
       );
-
-      // Create password hash
-      const passwordHash = await createPasswordHash(normalizedUsername);
 
       // Register with server
       console.log("[Auth] Registering with server...");
       const serverResponse = await apiRegisterUser({
         username: normalizedUsername,
-        passwordHash,
+        password,
         identityKeyEccPub: bytesToBase64(eccIdentity.publicKeyBytes),
         identityKeyPqcPub: bytesToBase64(pqcIdentity.publicKey),
         signingKeyPub: bytesToBase64(signingKey.publicKeyBytes),
@@ -286,6 +236,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         throw new Error("Registration failed - server returned null");
       }
 
+      await setAtRestPassphrase(serverResponse.userId, password);
+
       // Store identity locally
       await storeLocalIdentity(serverResponse.userId, normalizedUsername, {
         eccIdentityPublicRaw: eccIdentity.publicKeyBytes,
@@ -300,7 +252,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       const store = getKeyStore();
       const prekeyEccPrivateJwk = (await crypto.subtle.exportKey(
         "jwk",
-        prekeyEcc.privateKey
+        prekeyEcc.privateKey,
       )) as JsonWebKey;
       await store.storeSignedPrekey(
         {
@@ -312,7 +264,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           signature: toArrayBufferCopy(prekeySignature),
           createdAt: timestamp,
         },
-        serverResponse.userId
+        serverResponse.userId,
       );
       await store.storeSignedPrekey(
         {
@@ -324,7 +276,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
           signature: toArrayBufferCopy(prekeySignature),
           createdAt: timestamp,
         },
-        serverResponse.userId
+        serverResponse.userId,
       );
 
       console.log("[Auth] Registration complete:", serverResponse.userId);
@@ -345,7 +297,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   };
 
   // ===== Login =====
-  const login = async (username: string): Promise<boolean> => {
+  const login = async (
+    username: string,
+    password: string,
+  ): Promise<boolean> => {
     setState((s) => ({ ...s, isLoading: true, error: null }));
 
     try {
@@ -358,9 +313,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         }));
         return false;
       }
+      if (password.length < 8) {
+        setState((s) => ({
+          ...s,
+          isLoading: false,
+          error: "Password must be at least 8 characters",
+        }));
+        return false;
+      }
 
-      const passwordHash = await createPasswordHash(normalizedUsername);
-      const response = await apiLoginUser(normalizedUsername, passwordHash);
+      const response = await apiLoginUser(normalizedUsername, password);
 
       if (!response) {
         setState((s) => ({
@@ -370,6 +332,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
         }));
         return false;
       }
+
+      await setAtRestPassphrase(response.userId, password);
 
       // Require existing local key material for secure operation.
       const store = getKeyStore();
@@ -425,6 +389,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
   // ===== Logout =====
   const logout = async () => {
     setAuthToken(null);
+    clearAtRestPassphrase();
     const store = getKeyStore();
     await store.clearRuntimeData();
     setState({

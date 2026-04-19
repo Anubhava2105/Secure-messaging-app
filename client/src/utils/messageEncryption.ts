@@ -14,6 +14,29 @@ import {
 import { getRandomBytes } from "../crypto/utils/random";
 import { NONCE_SIZE } from "../constants";
 
+export interface MessageAuthContext {
+  messageId: string;
+  senderId: string;
+  recipientId: string;
+  groupId?: string;
+  groupEventType?: "group_message" | "group_membership";
+  groupMembershipCommitment?: string;
+}
+
+function buildMessageAad(context: MessageAuthContext): Uint8Array {
+  const canonical = [
+    "v1",
+    context.messageId,
+    context.senderId,
+    context.recipientId,
+    context.groupId ?? "",
+    context.groupEventType ?? "",
+    context.groupMembershipCommitment ?? "",
+  ].join("|");
+
+  return stringToBytes(canonical);
+}
+
 /**
  * Encrypt a message using the session key.
  * Format: [nonce (12 bytes)][ciphertext]
@@ -24,11 +47,13 @@ import { NONCE_SIZE } from "../constants";
  */
 export async function encryptMessage(
   content: string,
-  messageKey: Uint8Array
+  messageKey: Uint8Array,
+  authContext?: MessageAuthContext,
 ): Promise<string> {
   const nonce = getRandomBytes(NONCE_SIZE);
   const plaintext = stringToBytes(content);
-  const ciphertext = await aesGcmEncrypt(messageKey, nonce, plaintext);
+  const aad = authContext ? buildMessageAad(authContext) : undefined;
+  const ciphertext = await aesGcmEncrypt(messageKey, nonce, plaintext, aad);
   const combined = concatBytes(nonce, ciphertext);
   return bytesToBase64(combined);
 }
@@ -42,11 +67,13 @@ export async function encryptMessage(
  */
 export async function decryptMessage(
   encryptedBlob: string,
-  messageKey: Uint8Array
+  messageKey: Uint8Array,
+  authContext?: MessageAuthContext,
 ): Promise<string> {
   const combined = base64ToBytes(encryptedBlob);
   const nonce = combined.slice(0, NONCE_SIZE);
   const ciphertext = combined.slice(NONCE_SIZE);
-  const plaintext = await aesGcmDecrypt(messageKey, nonce, ciphertext);
+  const aad = authContext ? buildMessageAad(authContext) : undefined;
+  const plaintext = await aesGcmDecrypt(messageKey, nonce, ciphertext, aad);
   return bytesToString(plaintext);
 }

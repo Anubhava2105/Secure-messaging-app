@@ -25,6 +25,14 @@ const socketToUser = new Map<WebSocket, string>();
 const messageRateWindowMs = 10_000;
 const maxMessagesPerWindow = 120;
 const userMessageTimestamps = new Map<string, number[]>();
+const isProduction = process.env.NODE_ENV === "production";
+const WS_OPEN = 1;
+
+function debugLog(message: string): void {
+  if (!isProduction) {
+    console.log(message);
+  }
+}
 
 function isRateLimited(userId: string): boolean {
   const now = Date.now();
@@ -41,14 +49,43 @@ function isRateLimited(userId: string): boolean {
   return false;
 }
 
+function getOnlineSocket(userId: string): WebSocket | undefined {
+  const socket = connectedUsers.get(userId);
+  return socket && socket.readyState === WS_OPEN ? socket : undefined;
+}
+
+async function forwardReceipt(
+  receiptType: "delivered" | "read",
+  actorId: string,
+  message: WsClientMessage,
+): Promise<void> {
+  const { recipientId, messageId, timestamp } = message;
+  if (!recipientId || !messageId) return;
+
+  if (receiptType === "delivered") {
+    await store.ackPendingMessage(actorId, messageId);
+  }
+
+  const senderSocket = getOnlineSocket(recipientId);
+  if (!senderSocket) return;
+
+  const receipt: WsServerMessage = {
+    type: receiptType as WsMessageType,
+    messageId,
+    senderId: actorId,
+    timestamp: timestamp ?? Date.now(),
+  };
+  senderSocket.send(JSON.stringify(receipt));
+}
+
 /**
  * Main WebSocket connection handler.
  */
 export async function messageHandler(
   socket: WebSocket,
-  request: FastifyRequest
+  request: FastifyRequest,
 ): Promise<void> {
-  // Authenticate via JWT token in query params
+  // Authenticate via JWT token in Sec-WebSocket-Protocol
   const userId = await extractUserId(request);
 
   if (!userId) {
@@ -66,8 +103,7 @@ export async function messageHandler(
   // Register connection
   connectedUsers.set(userId, socket);
   socketToUser.set(socket, userId);
-
-  console.log(`User connected: ${userId}`);
+  debugLog(`[WS] Connected users: ${connectedUsers.size}`);
 
   // Update last seen
   await store.updateLastSeen(userId);
@@ -98,7 +134,7 @@ export async function messageHandler(
     connectedUsers.delete(userId);
     socketToUser.delete(socket);
     userMessageTimestamps.delete(userId);
-    console.log(`User disconnected: ${userId}`);
+    debugLog(`[WS] Connected users: ${connectedUsers.size}`);
     broadcastPresence(userId, "offline");
   });
 
@@ -113,7 +149,7 @@ export async function messageHandler(
 async function handleMessage(
   senderId: string,
   senderSocket: WebSocket,
-  message: WsClientMessage
+  message: WsClientMessage,
 ): Promise<void> {
   switch (message.type) {
     case "send" as WsMessageType:
@@ -123,6 +159,11 @@ async function handleMessage(
     case "ack" as WsMessageType:
       // Acknowledge message receipt - for delivery confirmation
       await handleAck(senderId, message);
+      break;
+
+    case "delivered" as WsMessageType:
+      // Delivery receipt - forward to sender and ack queued pending message.
+      await handleDelivered(senderId, message);
       break;
 
     case "read" as WsMessageType:
@@ -156,13 +197,16 @@ async function handleMessage(
 async function handleSendMessage(
   senderId: string,
   senderSocket: WebSocket,
-  message: WsClientMessage
+  message: WsClientMessage,
 ): Promise<void> {
   const {
     recipientId,
     encryptedBlob,
     handshakeData,
     messageId,
+    groupId,
+    groupEventType,
+    groupMembershipCommitment,
     messageNumber,
   } = message;
   const { ratchetKeyEcc } = message;
@@ -194,31 +238,71 @@ async function handleSendMessage(
 
   const timestamp = Date.now();
 
-  // ===== ZERO-KNOWLEDGE RELAY LOGGING =====
-  // This demonstrates that the server only sees encrypted data
-  console.log("\n" + "=".repeat(60));
-  console.log("MESSAGE RELAY (Zero-Knowledge)");
-  console.log("=".repeat(60));
-  console.log(`  From:      ${senderId.substring(0, 8)}...`);
-  console.log(`  To:        ${recipientId.substring(0, 8)}...`);
-  console.log(`  MessageID: ${messageId}`);
-  console.log(`  Timestamp: ${new Date(timestamp).toISOString()}`);
-  console.log("-".repeat(60));
-  console.log(`  Ciphertext bytes (base64 chars): ${encryptedBlob.length}`);
-  console.log("-".repeat(60));
-  console.log("  [!] SERVER CANNOT READ THIS CONTENT");
-  console.log("  [OK] End-to-end encrypted with AES-GCM-256");
-  console.log("=".repeat(60) + "\n");
+  let resolvedGroupName = groupId ? message.groupName : undefined;
+  let resolvedGroupMemberIds = groupId ? message.groupMemberIds : undefined;
+  let resolvedGroupEventType: WsServerMessage["groupEventType"] = groupId
+    ? "group_message"
+    : undefined;
+  let resolvedGroupMembershipCommitment = groupId
+    ? groupMembershipCommitment
+    : undefined;
+
+  if (groupId) {
+    const group = await store.getGroupById(groupId);
+    if (!group) {
+      sendError(senderSocket, messageId, "Group not found");
+      return;
+    }
+
+    const senderIsMember = group.memberUserIds.includes(senderId);
+    if (!senderIsMember) {
+      sendError(senderSocket, messageId, "Sender is not a group member");
+      return;
+    }
+
+    const recipientIsMember = group.memberUserIds.includes(recipientId);
+    if (!recipientIsMember) {
+      sendError(senderSocket, messageId, "Recipient is not a group member");
+      return;
+    }
+
+    if (groupEventType && groupEventType !== "group_message") {
+      sendError(senderSocket, messageId, "Invalid group event type");
+      return;
+    }
+
+    if (
+      groupMembershipCommitment &&
+      groupMembershipCommitment !== group.membershipCommitment
+    ) {
+      sendError(
+        senderSocket,
+        messageId,
+        "Stale group membership context. Refresh group and retry.",
+      );
+      return;
+    }
+
+    resolvedGroupName = group.name;
+    resolvedGroupMemberIds = group.memberUserIds;
+    resolvedGroupEventType = "group_message";
+    resolvedGroupMembershipCommitment = group.membershipCommitment;
+  }
 
   // Check if recipient is online
-  const recipientSocket = connectedUsers.get(recipientId);
+  const recipientSocket = getOnlineSocket(recipientId);
 
-  if (recipientSocket && recipientSocket.readyState === 1) {
+  if (recipientSocket) {
     // Recipient online - forward immediately
     const serverMessage: WsServerMessage = {
       type: "send" as WsMessageType,
       messageId,
       senderId,
+      groupId,
+      groupName: resolvedGroupName,
+      groupMemberIds: resolvedGroupMemberIds,
+      groupEventType: resolvedGroupEventType,
+      groupMembershipCommitment: resolvedGroupMembershipCommitment,
       encryptedBlob,
       handshakeData,
       ratchetKeyEcc,
@@ -227,18 +311,24 @@ async function handleSendMessage(
     };
 
     recipientSocket.send(JSON.stringify(serverMessage));
-    console.log(`  -> Delivered to online recipient`);
+    debugLog("[WS] Relay message delivered (online)");
   } else {
     // Recipient offline - store for later delivery
     await store.storePendingMessage(
       recipientId,
       senderId,
+      messageId,
       encryptedBlob,
       handshakeData,
       ratchetKeyEcc,
-      messageNumber
+      messageNumber,
+      groupId,
+      resolvedGroupName,
+      resolvedGroupMemberIds,
+      resolvedGroupEventType,
+      resolvedGroupMembershipCommitment,
     );
-    console.log(`  -> Stored for offline recipient`);
+    debugLog("[WS] Relay message queued (offline)");
   }
 
   // Send ACK to sender
@@ -255,10 +345,20 @@ async function handleSendMessage(
  */
 async function handleAck(
   _senderId: string,
-  _message: WsClientMessage
+  _message: WsClientMessage,
 ): Promise<void> {
   // Log or track delivery state
   // In production, update message delivery status in database
+}
+
+/**
+ * Handle delivery receipt - forward to original sender and ack pending queue entry.
+ */
+async function handleDelivered(
+  readerId: string,
+  message: WsClientMessage,
+): Promise<void> {
+  await forwardReceipt("delivered", readerId, message);
 }
 
 /**
@@ -266,22 +366,9 @@ async function handleAck(
  */
 async function handleReadReceipt(
   readerId: string,
-  message: WsClientMessage
+  message: WsClientMessage,
 ): Promise<void> {
-  const { recipientId, messageId, timestamp } = message;
-
-  if (!recipientId || !messageId) return;
-
-  const senderSocket = connectedUsers.get(recipientId);
-  if (senderSocket && senderSocket.readyState === 1) {
-    const receipt: WsServerMessage = {
-      type: "read" as WsMessageType,
-      messageId,
-      senderId: readerId,
-      timestamp: timestamp ?? Date.now(),
-    };
-    senderSocket.send(JSON.stringify(receipt));
-  }
+  await forwardReceipt("read", readerId, message);
 }
 
 /**
@@ -289,14 +376,14 @@ async function handleReadReceipt(
  */
 async function handleTypingIndicator(
   typerId: string,
-  message: WsClientMessage
+  message: WsClientMessage,
 ): Promise<void> {
   const { recipientId } = message;
 
   if (!recipientId) return;
 
-  const recipientSocket = connectedUsers.get(recipientId);
-  if (recipientSocket && recipientSocket.readyState === 1) {
+  const recipientSocket = getOnlineSocket(recipientId);
+  if (recipientSocket) {
     const typing: WsServerMessage = {
       type: "typing" as WsMessageType,
       messageId: message.messageId,
@@ -312,13 +399,13 @@ async function handleTypingIndicator(
  */
 async function handlePeerError(
   senderId: string,
-  message: WsClientMessage
+  message: WsClientMessage,
 ): Promise<void> {
   const { recipientId, messageId, error } = message;
   if (!recipientId || !messageId) return;
 
-  const recipientSocket = connectedUsers.get(recipientId);
-  if (recipientSocket && recipientSocket.readyState === 1) {
+  const recipientSocket = getOnlineSocket(recipientId);
+  if (recipientSocket) {
     const peerError: WsServerMessage = {
       type: "error" as WsMessageType,
       messageId,
@@ -335,15 +422,26 @@ async function handlePeerError(
  */
 async function deliverPendingMessages(
   userId: string,
-  socket: WebSocket
+  socket: WebSocket,
 ): Promise<void> {
   const pending = await store.getPendingMessages(userId);
 
   for (const msg of pending) {
+    const pendingGroupEventType: WsServerMessage["groupEventType"] =
+      msg.groupEventType === "group_message" ||
+      msg.groupEventType === "group_membership"
+        ? msg.groupEventType
+        : undefined;
+
     const serverMessage: WsServerMessage = {
       type: "send" as WsMessageType,
-      messageId: `pending-${msg.timestamp}`,
+      messageId: msg.messageId,
       senderId: msg.senderId,
+      groupId: msg.groupId,
+      groupName: msg.groupName,
+      groupMemberIds: msg.groupMemberIds,
+      groupEventType: pendingGroupEventType,
+      groupMembershipCommitment: msg.groupMembershipCommitment,
       encryptedBlob: msg.blob,
       handshakeData: msg.handshakeData,
       ratchetKeyEcc: msg.ratchetKeyEcc,
@@ -354,7 +452,7 @@ async function deliverPendingMessages(
   }
 
   if (pending.length > 0) {
-    console.log(`Delivered ${pending.length} pending messages to ${userId}`);
+    debugLog(`[WS] Delivered ${pending.length} pending messages`);
   }
 }
 
@@ -372,7 +470,7 @@ function sendError(socket: WebSocket, messageId: string, error: string): void {
 }
 
 function getTokenFromSecWebSocketProtocol(
-  headerValue: string | string[] | undefined
+  headerValue: string | string[] | undefined,
 ): string | null {
   if (!headerValue) return null;
 
@@ -383,7 +481,7 @@ function getTokenFromSecWebSocketProtocol(
     .filter(Boolean);
 
   const authProtocol = protocols.find((protocol) =>
-    protocol.startsWith("auth.")
+    protocol.startsWith("auth."),
   );
   if (!authProtocol) return null;
 
@@ -393,16 +491,14 @@ function getTokenFromSecWebSocketProtocol(
 
 /**
  * Extract and verify user ID from WebSocket auth context.
- * Preferred: `Sec-WebSocket-Protocol: auth.<jwt>`
- * Fallback (legacy): `?token=<jwt>` query parameter.
+ * Required: `Sec-WebSocket-Protocol: auth.<jwt>`
  */
 async function extractUserId(request: FastifyRequest): Promise<string | null> {
-  const query = request.query as Record<string, string>;
   const protocolHeader =
     request.headers["sec-websocket-protocol"] ??
     request.raw.headers["sec-websocket-protocol"];
 
-  const token = getTokenFromSecWebSocketProtocol(protocolHeader) ?? query.token;
+  const token = getTokenFromSecWebSocketProtocol(protocolHeader);
   if (!token) return null;
 
   try {
@@ -430,7 +526,7 @@ function broadcastPresence(userId: string, status: "online" | "offline"): void {
   });
 
   for (const [otherUserId, otherSocket] of connectedUsers) {
-    if (otherUserId !== userId && otherSocket.readyState === 1) {
+    if (otherUserId !== userId && otherSocket.readyState === WS_OPEN) {
       otherSocket.send(presenceMsg);
     }
   }
@@ -448,5 +544,5 @@ export function getConnectedUserCount(): number {
  */
 export function isUserOnline(userId: string): boolean {
   const socket = connectedUsers.get(userId);
-  return socket !== undefined && socket.readyState === 1;
+  return socket !== undefined && socket.readyState === WS_OPEN;
 }

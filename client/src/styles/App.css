@@ -272,6 +272,13 @@
   box-shadow: var(--shadow-sm);
 }
 
+.message-sender {
+  font-size: 11px;
+  color: var(--text-tertiary);
+  margin: 0 0 2px 8px;
+  font-weight: 600;
+}
+
 .received .message-content {
   background: var(--bubble-received);
   border-bottom-left-radius: 2px;
@@ -459,6 +466,22 @@
   margin-bottom: var(--spacing-lg);
 }
 
+.modal-mode-toggle {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.modal-mode-toggle .btn-secondary {
+  flex: 1;
+}
+
+.modal-mode-toggle .btn-secondary.active {
+  background: var(--accent-light);
+  color: var(--accent-color);
+  border-color: var(--accent-color);
+}
+
 .modal-content input {
   width: 100%;
   background: var(--bg-secondary);
@@ -477,6 +500,60 @@
 .modal-actions {
   display: flex;
   gap: var(--spacing-sm);
+}
+
+.group-members-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+  max-height: 260px;
+  overflow-y: auto;
+}
+
+.group-owner-note {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  margin-bottom: var(--spacing-md);
+}
+
+.group-member-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+}
+
+.group-member-row .btn-secondary {
+  flex: initial;
+}
+
+.group-member-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.group-member-meta {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.group-member-add-form {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-md);
+}
+
+.group-member-add-form input {
+  margin-bottom: 0;
+}
+
+.group-member-add-form .btn-primary {
+  min-width: 120px;
 }
 
 .modal-actions .btn-secondary,

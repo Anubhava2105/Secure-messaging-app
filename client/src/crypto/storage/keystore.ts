@@ -10,6 +10,115 @@
 
 const DB_NAME = "SecureMsgKeyStore";
 const DB_VERSION = 2;
+const AT_REST_SALT_PREFIX = "securemsg.atrest.salt.";
+
+let activeAtRestKey: CryptoKey | null = null;
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const b of bytes) binary += String.fromCharCode(b);
+  return btoa(binary);
+}
+
+function base64ToBytes(value: string): Uint8Array {
+  const binary = atob(value);
+  const out = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    out[i] = binary.charCodeAt(i);
+  }
+  return out;
+}
+
+function concatBytes(a: Uint8Array, b: Uint8Array): Uint8Array {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a, 0);
+  out.set(b, a.length);
+  return out;
+}
+
+function getSaltStorageKey(userId: string): string {
+  return `${AT_REST_SALT_PREFIX}${userId}`;
+}
+
+function requireAtRestKey(): CryptoKey {
+  if (!activeAtRestKey) {
+    throw new Error(
+      "At-rest key unavailable. Login required to unlock storage.",
+    );
+  }
+  return activeAtRestKey;
+}
+
+async function encryptBytes(plain: Uint8Array): Promise<string> {
+  const key = requireAtRestKey();
+  const nonce = crypto.getRandomValues(new Uint8Array(12));
+  const ciphertext = new Uint8Array(
+    await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce as BufferSource },
+      key,
+      plain as BufferSource,
+    ),
+  );
+  return bytesToBase64(concatBytes(nonce, ciphertext));
+}
+
+async function decryptBytes(encoded: string): Promise<Uint8Array> {
+  const key = requireAtRestKey();
+  const payload = base64ToBytes(encoded);
+  const nonce = payload.slice(0, 12);
+  const ciphertext = payload.slice(12);
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: nonce as BufferSource },
+    key,
+    ciphertext as BufferSource,
+  );
+  return new Uint8Array(plain);
+}
+
+async function encryptString(plain: string): Promise<string> {
+  return encryptBytes(new TextEncoder().encode(plain));
+}
+
+async function decryptString(encoded: string): Promise<string> {
+  return new TextDecoder().decode(await decryptBytes(encoded));
+}
+
+export async function setAtRestPassphrase(
+  userId: string,
+  password: string,
+): Promise<void> {
+  let saltB64 = localStorage.getItem(getSaltStorageKey(userId));
+  if (!saltB64) {
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    saltB64 = bytesToBase64(salt);
+    localStorage.setItem(getSaltStorageKey(userId), saltB64);
+  }
+
+  const baseKey = await crypto.subtle.importKey(
+    "raw",
+    new TextEncoder().encode(password),
+    "PBKDF2",
+    false,
+    ["deriveKey"],
+  );
+
+  activeAtRestKey = await crypto.subtle.deriveKey(
+    {
+      name: "PBKDF2",
+      salt: base64ToBytes(saltB64) as BufferSource,
+      iterations: 250000,
+      hash: "SHA-256",
+    },
+    baseKey,
+    { name: "AES-GCM", length: 256 },
+    false,
+    ["encrypt", "decrypt"],
+  );
+}
+
+export function clearAtRestPassphrase(): void {
+  activeAtRestKey = null;
+}
 
 // Store names
 const IDENTITY_STORE = "identity";
@@ -128,12 +237,32 @@ export class KeyStore {
    */
   async storeIdentity(identity: StoredIdentity): Promise<void> {
     const db = await this.ensureReady();
+    const persisted: Record<string, unknown> = {
+      ...identity,
+    };
+
+    if (identity.eccIdentityPrivate) {
+      persisted.eccIdentityPrivateEnc = await encryptString(
+        JSON.stringify(identity.eccIdentityPrivate),
+      );
+      delete persisted.eccIdentityPrivate;
+    }
+    if (identity.signingPrivate) {
+      persisted.signingPrivateEnc = await encryptString(
+        JSON.stringify(identity.signingPrivate),
+      );
+      delete persisted.signingPrivate;
+    }
+    persisted.pqcIdentityPrivateEnc = await encryptBytes(
+      new Uint8Array(identity.pqcIdentityPrivate),
+    );
+    delete persisted.pqcIdentityPrivate;
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(IDENTITY_STORE, "readwrite");
       const store = tx.objectStore(IDENTITY_STORE);
 
-      const request = store.put(identity);
+      const request = store.put(persisted);
 
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
@@ -152,7 +281,43 @@ export class KeyStore {
 
       const request = store.get(userId);
 
-      request.onsuccess = () => resolve(request.result ?? null);
+      request.onsuccess = async () => {
+        try {
+          const result = request.result as Record<string, unknown> | undefined;
+          if (!result) {
+            resolve(null);
+            return;
+          }
+
+          if (typeof result.pqcIdentityPrivateEnc !== "string") {
+            resolve(result as unknown as StoredIdentity);
+            return;
+          }
+
+          const identity: StoredIdentity = {
+            ...(result as unknown as StoredIdentity),
+            eccIdentityPrivate:
+              typeof result.eccIdentityPrivateEnc === "string"
+                ? (JSON.parse(
+                    await decryptString(result.eccIdentityPrivateEnc),
+                  ) as JsonWebKey)
+                : undefined,
+            signingPrivate:
+              typeof result.signingPrivateEnc === "string"
+                ? (JSON.parse(
+                    await decryptString(result.signingPrivateEnc),
+                  ) as JsonWebKey)
+                : undefined,
+            pqcIdentityPrivate: (
+              await decryptBytes(result.pqcIdentityPrivateEnc)
+            ).buffer as ArrayBuffer,
+          };
+
+          resolve(identity);
+        } catch (error) {
+          reject(error);
+        }
+      };
       request.onerror = () => reject(request.error);
     });
   }
@@ -165,16 +330,30 @@ export class KeyStore {
     ownerUserId = "local-user",
   ): Promise<void> {
     const db = await this.ensureReady();
+    const persisted: Record<string, unknown> = {
+      ...prekey,
+      id: `${ownerUserId}:${prekey.id}`,
+      ownerUserId,
+    };
+
+    if (prekey.privateKey instanceof ArrayBuffer) {
+      persisted.privateKeyKind = "ab";
+      persisted.privateKeyEnc = await encryptBytes(
+        new Uint8Array(prekey.privateKey),
+      );
+    } else {
+      persisted.privateKeyKind = "jwk";
+      persisted.privateKeyEnc = await encryptString(
+        JSON.stringify(prekey.privateKey),
+      );
+    }
+    delete persisted.privateKey;
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(PREKEY_STORE, "readwrite");
       const store = tx.objectStore(PREKEY_STORE);
 
-      const request = store.put({
-        ...prekey,
-        id: `${ownerUserId}:${prekey.id}`,
-        ownerUserId,
-      });
+      const request = store.put(persisted);
 
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
@@ -199,7 +378,28 @@ export class KeyStore {
 
       namespacedRequest.onsuccess = () => {
         if (namespacedRequest.result) {
-          resolve(namespacedRequest.result ?? null);
+          const result = namespacedRequest.result as Record<string, unknown>;
+          if (
+            typeof result.privateKeyEnc === "string" &&
+            typeof result.privateKeyKind === "string"
+          ) {
+            const restore = async () => {
+              const privateKeyEnc = result.privateKeyEnc as string;
+              const privateKey =
+                result.privateKeyKind === "ab"
+                  ? ((await decryptBytes(privateKeyEnc)).buffer as ArrayBuffer)
+                  : (JSON.parse(
+                      await decryptString(privateKeyEnc),
+                    ) as JsonWebKey);
+              resolve({
+                ...(result as unknown as StoredPrekey),
+                privateKey,
+              });
+            };
+            void restore().catch(reject);
+            return;
+          }
+          resolve(result as unknown as StoredPrekey);
           return;
         }
 
@@ -243,12 +443,13 @@ export class KeyStore {
    */
   async storeSession(session: StoredSession): Promise<void> {
     const db = await this.ensureReady();
+    const payloadEnc = await encryptString(JSON.stringify(session));
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(SESSION_STORE, "readwrite");
       const store = tx.objectStore(SESSION_STORE);
 
-      const request = store.put(session);
+      const request = store.put({ peerId: session.peerId, payloadEnc });
 
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
@@ -267,7 +468,24 @@ export class KeyStore {
 
       const request = store.get(peerId);
 
-      request.onsuccess = () => resolve(request.result ?? null);
+      request.onsuccess = async () => {
+        try {
+          const result = request.result as Record<string, unknown> | undefined;
+          if (!result) {
+            resolve(null);
+            return;
+          }
+          if (typeof result.payloadEnc !== "string") {
+            resolve(result as unknown as StoredSession);
+            return;
+          }
+          resolve(
+            JSON.parse(await decryptString(result.payloadEnc)) as StoredSession,
+          );
+        } catch (error) {
+          reject(error);
+        }
+      };
       request.onerror = () => reject(request.error);
     });
   }
@@ -301,7 +519,26 @@ export class KeyStore {
 
       const request = store.getAll();
 
-      request.onsuccess = () => resolve(request.result ?? []);
+      request.onsuccess = async () => {
+        try {
+          const rows = (request.result ?? []) as Array<Record<string, unknown>>;
+          const restored: StoredSession[] = [];
+          for (const row of rows) {
+            if (typeof row.payloadEnc === "string") {
+              restored.push(
+                JSON.parse(
+                  await decryptString(row.payloadEnc),
+                ) as StoredSession,
+              );
+            } else {
+              restored.push(row as unknown as StoredSession);
+            }
+          }
+          resolve(restored);
+        } catch (error) {
+          reject(error);
+        }
+      };
       request.onerror = () => reject(request.error);
     });
   }
@@ -356,10 +593,16 @@ export class KeyStore {
    */
   async storeMessage(message: StoredMessage): Promise<void> {
     const db = await this.ensureReady();
+    const persisted: Record<string, unknown> = {
+      ...message,
+      contentEnc: await encryptString(message.content),
+    };
+    delete persisted.content;
+
     return new Promise((resolve, reject) => {
       const tx = db.transaction(MESSAGE_STORE, "readwrite");
       const store = tx.objectStore(MESSAGE_STORE);
-      const request = store.put(message);
+      const request = store.put(persisted);
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
     });
@@ -375,10 +618,25 @@ export class KeyStore {
       const store = tx.objectStore(MESSAGE_STORE);
       const index = store.index("peerId");
       const request = index.getAll(peerId);
-      request.onsuccess = () => {
-        const results = (request.result ?? []) as StoredMessage[];
-        results.sort((a, b) => a.timestamp - b.timestamp);
-        resolve(results);
+      request.onsuccess = async () => {
+        try {
+          const rows = (request.result ?? []) as Array<Record<string, unknown>>;
+          const results: StoredMessage[] = [];
+          for (const row of rows) {
+            if (typeof row.contentEnc === "string") {
+              results.push({
+                ...(row as unknown as StoredMessage),
+                content: await decryptString(row.contentEnc),
+              });
+            } else {
+              results.push(row as unknown as StoredMessage);
+            }
+          }
+          results.sort((a, b) => a.timestamp - b.timestamp);
+          resolve(results);
+        } catch (error) {
+          reject(error);
+        }
       };
       request.onerror = () => reject(request.error);
     });
@@ -393,7 +651,25 @@ export class KeyStore {
       const tx = db.transaction(MESSAGE_STORE, "readonly");
       const store = tx.objectStore(MESSAGE_STORE);
       const request = store.getAll();
-      request.onsuccess = () => resolve(request.result ?? []);
+      request.onsuccess = async () => {
+        try {
+          const rows = (request.result ?? []) as Array<Record<string, unknown>>;
+          const results: StoredMessage[] = [];
+          for (const row of rows) {
+            if (typeof row.contentEnc === "string") {
+              results.push({
+                ...(row as unknown as StoredMessage),
+                content: await decryptString(row.contentEnc),
+              });
+            } else {
+              results.push(row as unknown as StoredMessage);
+            }
+          }
+          resolve(results);
+        } catch (error) {
+          reject(error);
+        }
+      };
       request.onerror = () => reject(request.error);
     });
   }
@@ -554,6 +830,14 @@ export interface StoredMessage {
   senderId: string;
   recipientId: string;
   peerId: string; // indexed: the other party's ID
+  conversationId?: string;
+  groupId?: string;
+  groupName?: string;
+  groupMemberIds?: string[];
+  groupEventType?: "group_message" | "group_membership";
+  groupMembershipCommitment?: string;
+  deliveredByUserIds?: string[];
+  readByUserIds?: string[];
   content: string;
   timestamp: number;
   isPqcProtected: boolean;
@@ -566,8 +850,18 @@ export interface StoredMessage {
 export interface StoredContact {
   id: string;
   username: string;
+  kind?: "direct" | "group";
+  ownerId?: string;
+  membershipCommitment?: string;
+  memberIds?: string[];
   status: "online" | "offline";
   lastSeen?: number;
+  identityKeyEccFingerprint?: string;
+  identityKeyPqcFingerprint?: string;
+  signingKeyFingerprint?: string;
+  trustState?: "trusted" | "unverified" | "changed";
+  trustWarning?: string;
+  trustUpdatedAt?: number;
 }
 
 // Singleton instance

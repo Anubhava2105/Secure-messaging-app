@@ -17,6 +17,11 @@ export interface WsOutgoingMessage {
   type: WsMessageType;
   messageId: string;
   recipientId: string;
+  groupId?: string;
+  groupName?: string;
+  groupMemberIds?: string[];
+  groupEventType?: "group_message" | "group_membership";
+  groupMembershipCommitment?: string;
   encryptedBlob?: string; // Base64
   handshakeData?: string; // Base64 serialized handshake message
   error?: string;
@@ -31,6 +36,11 @@ export interface WsIncomingMessage {
   type: WsMessageType;
   messageId: string;
   senderId?: string;
+  groupId?: string;
+  groupName?: string;
+  groupMemberIds?: string[];
+  groupEventType?: "group_message" | "group_membership";
+  groupMembershipCommitment?: string;
   encryptedBlob?: string;
   handshakeData?: string;
   /** Optional sender DH-ratchet public key (Base64 P-384 raw key) */

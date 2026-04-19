@@ -60,11 +60,27 @@ const Sidebar: React.FC<SidebarProps> = ({
               <div className="avatar">{contact.username[0].toUpperCase()}</div>
               <div className="contact-info">
                 <div className="contact-name">{contact.username}</div>
-                <div className="last-message">Protected session</div>
+                <div className="last-message">
+                  {contact.kind === "group"
+                    ? `${Math.max((contact.memberIds?.length ?? 1) - 1, 0)} members`
+                    : contact.trustState === "changed"
+                      ? "Key mismatch detected"
+                      : contact.trustState === "unverified"
+                        ? "Identity not fully verified"
+                        : "Protected session"}
+                </div>
               </div>
-              {contact.publicKeyPqc.length > 0 && (
-                <span className="pqc-badge">PQC</span>
-              )}
+              {contact.kind === "group" ? (
+                <span className="pqc-badge">GROUP</span>
+              ) : contact.trustState === "changed" ? (
+                <span className="trust-badge trust-badge-alert">KEY ALERT</span>
+              ) : contact.trustState === "unverified" ? (
+                <span className="trust-badge trust-badge-warn">VERIFY</span>
+              ) : null}
+              {contact.publicKeyPqc.length > 0 &&
+                contact.trustState !== "changed" && (
+                  <span className="pqc-badge">PQC</span>
+                )}
             </div>
           ))
         )}

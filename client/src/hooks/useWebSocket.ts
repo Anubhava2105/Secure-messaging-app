@@ -137,8 +137,7 @@ export function useWebSocket({
           }
         }
 
-        const wsUrl = `${WS_URL}?token=${encodeURIComponent(token)}`;
-        const ws = new WebSocket(wsUrl);
+        const ws = new WebSocket(WS_URL, [`auth.${token}`]);
         wsRef.current = ws;
 
         ws.onopen = () => {

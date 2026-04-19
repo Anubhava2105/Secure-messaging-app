@@ -94,16 +94,26 @@ export interface PreKeyBundleDTO {
   oneTimePrekeyEcc?: OneTimePreKey;
 }
 
+export interface GroupInfoDTO {
+  groupId: string;
+  name: string;
+  ownerId: string;
+  memberUserIds: string[];
+  createdAt: number;
+  updatedAt: number;
+  membershipCommitment: string;
+}
+
 /**
  * Find a user by their username.
  * Used for contact discovery.
  */
 export async function findUserByUsername(
-  username: string
+  username: string,
 ): Promise<UserInfo | null> {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/users/${encodeURIComponent(username)}`
+      `${API_BASE_URL}/users/${encodeURIComponent(username)}`,
     );
     if (!response.ok) {
       if (response.status === 404) return null;
@@ -123,7 +133,7 @@ export async function findUserByUsername(
 export async function findUserById(userId: string): Promise<UserInfo | null> {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/users/id/${encodeURIComponent(userId)}`
+      `${API_BASE_URL}/users/id/${encodeURIComponent(userId)}`,
     );
     if (!response.ok) {
       if (response.status === 404) return null;
@@ -141,11 +151,14 @@ export async function findUserById(userId: string): Promise<UserInfo | null> {
  * SECURITY: One-time prekeys are consumed atomically by the server.
  */
 export async function getPreKeyBundle(
-  userId: string
+  userId: string,
 ): Promise<PreKeyBundleDTO | null> {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/users/${encodeURIComponent(userId)}/prekeys`
+      `${API_BASE_URL}/users/${encodeURIComponent(userId)}/prekeys`,
+      {
+        headers: authHeaders(),
+      },
     );
     if (!response.ok) {
       if (response.status === 404) return null;
@@ -164,7 +177,7 @@ export async function getPreKeyBundle(
  */
 export async function registerUser(data: {
   username: string;
-  passwordHash: string;
+  password: string;
   identityKeyEccPub: string;
   identityKeyPqcPub: string;
   signingKeyPub: string;
@@ -181,7 +194,7 @@ export async function registerUser(data: {
     if (!response.ok) {
       const errorBody = await response.json().catch(() => ({}));
       throw new Error(
-        errorBody.error || `Registration failed: ${response.statusText}`
+        errorBody.error || `Registration failed: ${response.statusText}`,
       );
     }
     const result = await response.json();
@@ -200,12 +213,12 @@ export async function registerUser(data: {
  */
 export async function loginUser(
   username: string,
-  passwordHash: string
+  password: string,
 ): Promise<{ userId: string; username: string; token: string } | null> {
   const response = await fetch(`${API_BASE_URL}/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username, passwordHash }),
+    body: JSON.stringify({ username, password }),
   });
   if (!response.ok) {
     if (response.status === 401) return null;
@@ -240,7 +253,7 @@ export async function getPrekeyCount(): Promise<number> {
  * Requires authentication.
  */
 export async function uploadPrekeys(
-  prekeys: OneTimePreKey[]
+  prekeys: OneTimePreKey[],
 ): Promise<boolean> {
   try {
     const response = await fetch(`${API_BASE_URL}/prekeys`, {
@@ -251,5 +264,106 @@ export async function uploadPrekeys(
     return response.ok;
   } catch {
     return false;
+  }
+}
+
+export async function listGroups(): Promise<GroupInfoDTO[]> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/groups`, {
+      headers: authHeaders(),
+    });
+    if (!response.ok) {
+      return [];
+    }
+
+    const payload = (await response.json()) as { groups?: GroupInfoDTO[] };
+    return payload.groups ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function getGroup(groupId: string): Promise<GroupInfoDTO | null> {
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/groups/${encodeURIComponent(groupId)}`,
+      {
+        headers: authHeaders(),
+      },
+    );
+    if (!response.ok) {
+      return null;
+    }
+    return (await response.json()) as GroupInfoDTO;
+  } catch {
+    return null;
+  }
+}
+
+export async function createGroup(
+  name: string,
+  memberUserIds: string[],
+): Promise<GroupInfoDTO | null> {
+  try {
+    const response = await fetch(`${API_BASE_URL}/groups`, {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ name, memberUserIds }),
+    });
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as GroupInfoDTO;
+  } catch {
+    return null;
+  }
+}
+
+export async function addGroupMember(
+  groupId: string,
+  userId: string,
+): Promise<GroupInfoDTO | null> {
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/groups/${encodeURIComponent(groupId)}/members`,
+      {
+        method: "POST",
+        headers: authHeaders(),
+        body: JSON.stringify({ userId }),
+      },
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as GroupInfoDTO;
+  } catch {
+    return null;
+  }
+}
+
+export async function removeGroupMember(
+  groupId: string,
+  userId: string,
+): Promise<GroupInfoDTO | null> {
+  try {
+    const response = await fetch(
+      `${API_BASE_URL}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+      {
+        method: "DELETE",
+        headers: authHeaders(),
+      },
+    );
+
+    if (!response.ok) {
+      return null;
+    }
+
+    return (await response.json()) as GroupInfoDTO;
+  } catch {
+    return null;
   }
 }

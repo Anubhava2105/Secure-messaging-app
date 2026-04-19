@@ -44,6 +44,15 @@ let mainWindow: BrowserWindow | null = null;
 // WebSocket connection
 let wsConnection: WebSocket | null = null;
 
+const isDevelopment = process.env.NODE_ENV === "development";
+const relayOrigin = (process.env.RELAY_ORIGIN ?? "https://relay.securemsg.app")
+  .trim()
+  .replace(/\/+$/, "");
+const relayWsOrigin = relayOrigin
+  .replace(/^http:\/\//i, "ws://")
+  .replace(/^https:\/\//i, "wss://");
+const allowInsecureDevCerts = process.env.ALLOW_INSECURE_DEV_CERTS === "true";
+
 /**
  * Create the main browser window with security hardening.
  */
@@ -131,7 +140,7 @@ function createWindow(): BrowserWindow {
   });
 
   // Load the app
-  if (process.env.NODE_ENV === "development") {
+  if (isDevelopment) {
     // Development: load from Vite dev server
     mainWindow.loadURL("http://localhost:5173");
     mainWindow.webContents.openDevTools();
@@ -152,10 +161,15 @@ function createWindow(): BrowserWindow {
  * Set strict Content Security Policy.
  */
 function setContentSecurityPolicy(): void {
+  const connectSources = ["'self'", relayWsOrigin];
+  if (isDevelopment) {
+    connectSources.push("ws://localhost:3000");
+  }
+
   session.defaultSession.webRequest.onHeadersReceived(
     (
       details: OnHeadersReceivedListenerDetails,
-      callback: (response: HeadersReceivedResponse) => void
+      callback: (response: HeadersReceivedResponse) => void,
     ) => {
       callback({
         responseHeaders: {
@@ -171,9 +185,8 @@ function setContentSecurityPolicy(): void {
               // Styles: self + inline (for Tailwind)
               "style-src 'self' 'unsafe-inline'",
 
-              // Connect: self + WebSocket to relay server
-              // SECURITY: Update this to your production relay URL
-              "connect-src 'self' ws://localhost:3000 wss://relay.securemsg.app",
+              // Connect: self + configured relay WebSocket endpoint
+              `connect-src ${connectSources.join(" ")}`,
 
               // Images: self + data URIs + blobs
               "img-src 'self' data: blob:",
@@ -194,16 +207,14 @@ function setContentSecurityPolicy(): void {
               "frame-ancestors 'none'",
 
               // Upgrade insecure requests in production
-              process.env.NODE_ENV === "production"
-                ? "upgrade-insecure-requests"
-                : "",
+              !isDevelopment ? "upgrade-insecure-requests" : "",
             ]
               .filter(Boolean)
               .join("; "),
           ],
         },
       });
-    }
+    },
   );
 }
 
@@ -216,8 +227,7 @@ function connectWebSocket(url: string, token: string): Promise<void> {
       wsConnection.close();
     }
 
-    const wsUrl = `${url}?token=${encodeURIComponent(token)}`;
-    wsConnection = new WebSocket(wsUrl);
+    wsConnection = new WebSocket(url, [`auth.${token}`]);
 
     wsConnection.on("open", () => {
       console.log("WebSocket connected");
@@ -285,7 +295,7 @@ ipcMain.handle(
     } catch (error) {
       return { success: false, error: (error as Error).message };
     }
-  }
+  },
 );
 
 // Send WebSocket message
@@ -293,7 +303,7 @@ ipcMain.handle(
   "send-ws-message",
   (_event: Electron.IpcMainInvokeEvent, data: string) => {
     return sendWebSocketMessage(data);
-  }
+  },
 );
 
 // Disconnect WebSocket
@@ -312,7 +322,7 @@ ipcMain.handle(
       title: string;
       message: string;
       buttons?: string[];
-    }
+    },
   ) => {
     const result = await dialog.showMessageBox(mainWindow!, {
       type: options.type,
@@ -321,7 +331,7 @@ ipcMain.handle(
       buttons: options.buttons ?? ["OK"],
     });
     return result.response;
-  }
+  },
 );
 
 // ==================
@@ -364,15 +374,15 @@ app.on(
     _url: string,
     _error: string,
     _certificate: Electron.Certificate,
-    callback: (isTrusted: boolean) => void
+    callback: (isTrusted: boolean) => void,
   ) => {
-    // In development, you might want to allow self-signed certs
-    if (process.env.NODE_ENV === "development") {
+    // Self-signed certificates are only allowed when explicitly opted in.
+    if (isDevelopment && allowInsecureDevCerts) {
       event.preventDefault();
       callback(true);
     } else {
-      // In production, always reject invalid certificates
+      // Reject invalid certificates by default in all other cases.
       callback(false);
     }
-  }
+  },
 );

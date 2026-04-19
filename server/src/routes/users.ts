@@ -6,7 +6,7 @@
  */
 
 import { FastifyInstance, FastifyRequest, FastifyReply } from "fastify";
-import { randomUUID, timingSafeEqual } from "crypto";
+import { randomUUID, randomBytes, scryptSync, timingSafeEqual } from "crypto";
 import { z } from "zod";
 import { store } from "../store/index.js";
 import type { RegisterUserRequest, UserRecord } from "../types/index.js";
@@ -25,7 +25,7 @@ const oneTimePrekeySchema = z.object({
 
 const registerSchema = z.object({
   username: z.string().min(3).max(64),
-  passwordHash: z.string().min(16),
+  password: z.string().min(8).max(256),
   identityKeyEccPub: z.string().min(1),
   identityKeyPqcPub: z.string().min(1),
   signingKeyPub: z.string().min(1),
@@ -36,7 +36,7 @@ const registerSchema = z.object({
 
 const loginSchema = z.object({
   username: z.string().min(3).max(64),
-  passwordHash: z.string().min(16),
+  password: z.string().min(8).max(256),
 });
 
 type LoginAttemptState = {
@@ -47,16 +47,17 @@ type LoginAttemptState = {
 
 const LOGIN_MAX_ATTEMPTS = Math.max(
   1,
-  Number.parseInt(process.env.LOGIN_MAX_ATTEMPTS ?? "5", 10) || 5
+  Number.parseInt(process.env.LOGIN_MAX_ATTEMPTS ?? "5", 10) || 5,
 );
 const LOGIN_WINDOW_MS = Math.max(
   1_000,
-  Number.parseInt(process.env.LOGIN_WINDOW_MS ?? "60000", 10) || 60_000
+  Number.parseInt(process.env.LOGIN_WINDOW_MS ?? "60000", 10) || 60_000,
 );
 const LOGIN_LOCK_MS = Math.max(
   1_000,
-  Number.parseInt(process.env.LOGIN_LOCK_MS ?? "300000", 10) || 300_000
+  Number.parseInt(process.env.LOGIN_LOCK_MS ?? "300000", 10) || 300_000,
 );
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN ?? "12h";
 
 const loginAttempts = new Map<string, LoginAttemptState>();
 
@@ -91,6 +92,33 @@ function secureStringEqual(a: string, b: string): boolean {
   return timingSafeEqual(left, right);
 }
 
+function hashPassword(password: string): { salt: string; hash: string } {
+  const salt = randomBytes(16);
+  const hash = scryptSync(password, salt, 64);
+  return {
+    salt: salt.toString("base64"),
+    hash: hash.toString("base64"),
+  };
+}
+
+function verifyPassword(user: UserRecord, password: string): boolean {
+  if (!user.passwordSalt) {
+    // Legacy fallback: older records may only have passwordHash.
+    return secureStringEqual(user.passwordHash, password);
+  }
+
+  try {
+    const salt = Buffer.from(user.passwordSalt, "base64");
+    const expected = Buffer.from(user.passwordHash, "base64");
+    const actual = scryptSync(password, salt, 64);
+
+    if (expected.length !== actual.length) return false;
+    return timingSafeEqual(expected, actual);
+  } catch {
+    return false;
+  }
+}
+
 export async function userRoutes(fastify: FastifyInstance): Promise<void> {
   /**
    * Register a new user with their public keys.
@@ -101,7 +129,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     "/register",
     async (
       request: FastifyRequest<{ Body: RegisterUserRequest }>,
-      reply: FastifyReply
+      reply: FastifyReply,
     ) => {
       const parsed = registerSchema.safeParse(request.body);
       if (!parsed.success) {
@@ -121,11 +149,13 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       // Create user record
       const userId = randomUUID();
       const now = Date.now();
+      const passwordRecord = hashPassword(body.password);
 
       const user: UserRecord = {
         id: userId,
         username: body.username,
-        passwordHash: body.passwordHash,
+        passwordSalt: passwordRecord.salt,
+        passwordHash: passwordRecord.hash,
         identityKeyEccPub: body.identityKeyEccPub,
         identityKeyPqcPub: body.identityKeyPqcPub,
         signingKeyPub: body.signingKeyPub,
@@ -141,7 +171,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       // Generate JWT token
       const token = fastify.jwt.sign(
         { userId, username: body.username },
-        { expiresIn: "7d" }
+        { expiresIn: JWT_EXPIRES_IN },
       );
 
       fastify.log.info({ userId, username: body.username }, "User registered");
@@ -152,14 +182,14 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
         token,
         createdAt: now,
       });
-    }
+    },
   );
 
   /**
    * Login (verify credentials and return JWT).
    */
   fastify.post<{
-    Body: { username: string; passwordHash: string };
+    Body: { username: string; password: string };
   }>("/login", async (request, reply) => {
     const parsed = loginSchema.safeParse(request.body);
     if (!parsed.success) {
@@ -169,7 +199,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       });
     }
 
-    const { username, passwordHash } = parsed.data;
+    const { username, password } = parsed.data;
     const now = Date.now();
     const key = attemptKey(username, request.ip ?? "unknown");
     const state = getAttemptState(key, now);
@@ -189,7 +219,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
       return reply.code(401).send({ error: "Invalid credentials" });
     }
 
-    if (!secureStringEqual(user.passwordHash, passwordHash)) {
+    if (!verifyPassword(user, password)) {
       state.fails += 1;
       if (state.fails >= LOGIN_MAX_ATTEMPTS) {
         state.lockedUntil = now + LOGIN_LOCK_MS;
@@ -205,7 +235,7 @@ export async function userRoutes(fastify: FastifyInstance): Promise<void> {
     // Generate JWT token
     const token = fastify.jwt.sign(
       { userId: user.id, username: user.username },
-      { expiresIn: "7d" }
+      { expiresIn: JWT_EXPIRES_IN },
     );
 
     return {

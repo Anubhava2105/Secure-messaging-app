@@ -72,11 +72,11 @@ await server.register(fastifyRateLimit, {
 server.decorate(
   "authenticate",
   async function (request: FastifyRequest, reply: FastifyReply) {
-  try {
-    await request.jwtVerify();
-  } catch (_err) {
-    reply.code(401).send({ error: "Unauthorized" });
-  }
+    try {
+      await request.jwtVerify();
+    } catch (_err) {
+      reply.code(401).send({ error: "Unauthorized" });
+    }
   },
 );
 

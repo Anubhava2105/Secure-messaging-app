@@ -17,7 +17,7 @@ import type { Session } from "../crypto/hybrid/handshake";
  */
 export async function deriveSharedDevKey(
   userId1: string,
-  userId2: string
+  userId2: string,
 ): Promise<Uint8Array> {
   void userId1;
   void userId2;
@@ -33,7 +33,7 @@ export async function deriveSharedDevKey(
  */
 export async function createDevSession(
   myUserId: string,
-  peerId: string
+  peerId: string,
 ): Promise<Session> {
   void myUserId;
   void peerId;

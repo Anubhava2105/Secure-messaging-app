@@ -8,7 +8,7 @@
  * - All stored data is encrypted end-to-end
  */
 
-import Fastify from "fastify";
+import Fastify, { type FastifyReply, type FastifyRequest } from "fastify";
 import fastifyWebSocket from "@fastify/websocket";
 import fastifyCors from "@fastify/cors";
 import fastifyJwt from "@fastify/jwt";
@@ -69,13 +69,16 @@ await server.register(fastifyRateLimit, {
 });
 
 // Reusable auth decorator
-server.decorate("authenticate", async function (request: any, reply: any) {
+server.decorate(
+  "authenticate",
+  async function (request: FastifyRequest, reply: FastifyReply) {
   try {
     await request.jwtVerify();
-  } catch (err) {
+  } catch (_err) {
     reply.code(401).send({ error: "Unauthorized" });
   }
-});
+  },
+);
 
 // Health check endpoint
 server.get("/health", async () => {

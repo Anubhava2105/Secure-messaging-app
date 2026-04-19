@@ -124,7 +124,7 @@ export async function messageHandler(
 
       const message = JSON.parse(data.toString()) as WsClientMessage;
       await handleMessage(userId, socket, message);
-    } catch (error) {
+    } catch (_error) {
       sendError(socket, "invalid-message", "Invalid message format");
     }
   });

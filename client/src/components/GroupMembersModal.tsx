@@ -25,7 +25,7 @@ const GroupMembersModal: React.FC<GroupMembersModalProps> = ({
   const [removingUserId, setRemovingUserId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const memberIds = group?.memberIds ?? [];
+  const memberIds = useMemo(() => group?.memberIds ?? [], [group?.memberIds]);
   const isOwner = Boolean(group?.ownerId && group.ownerId === currentUserId);
   const canOwnerLeave = memberIds.length > 2;
 

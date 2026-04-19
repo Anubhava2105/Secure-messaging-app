@@ -16,9 +16,11 @@ import type { Session } from "../crypto/hybrid/handshake";
  * @returns 32-byte shared key
  */
 export async function deriveSharedDevKey(
-  _userId1: string,
-  _userId2: string
+  userId1: string,
+  userId2: string
 ): Promise<Uint8Array> {
+  void userId1;
+  void userId2;
   throw new Error("dev session fallback is disabled");
 }
 
@@ -30,8 +32,10 @@ export async function deriveSharedDevKey(
  * @returns Session object with shared keys
  */
 export async function createDevSession(
-  _myUserId: string,
-  _peerId: string
+  myUserId: string,
+  peerId: string
 ): Promise<Session> {
+  void myUserId;
+  void peerId;
   throw new Error("dev session fallback is disabled");
 }

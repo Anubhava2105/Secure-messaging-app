@@ -61,6 +61,39 @@ function computeMembershipCommitment(
   return createHash("sha256").update(payload).digest("hex");
 }
 
+interface UserRow {
+  id: string;
+  username: string;
+  data: string;
+  lastSeen: number;
+}
+
+interface OneTimePrekeyRow {
+  id: number;
+  publicKey: string;
+}
+
+interface PersistedUserData {
+  originalUsername?: string;
+  passwordSalt: string;
+  passwordHash: string;
+  identityKeyEccPub: string;
+  identityKeyPqcPub: string;
+  signingKeyPub: string;
+  signedPrekeyEcc: UserRecord["signedPrekeyEcc"];
+  signedPrekeyPqc: UserRecord["signedPrekeyPqc"];
+  createdAt: number;
+}
+
+function getSqliteErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) {
+    return undefined;
+  }
+
+  const code = (error as { code?: unknown }).code;
+  return typeof code === "string" ? code : undefined;
+}
+
 export class SqliteStore {
   private db: Database.Database;
 
@@ -237,19 +270,20 @@ export class SqliteStore {
 
     try {
       tx();
-    } catch (error: any) {
-      if (error.code === "SQLITE_CONSTRAINT_PRIMARYKEY") {
+    } catch (error: unknown) {
+      const errorCode = getSqliteErrorCode(error);
+      if (errorCode === "SQLITE_CONSTRAINT_PRIMARYKEY") {
         throw new Error("User ID already exists");
       }
-      if (error.code === "SQLITE_CONSTRAINT_UNIQUE") {
+      if (errorCode === "SQLITE_CONSTRAINT_UNIQUE") {
         throw new Error("Username already taken");
       }
       throw error;
     }
   }
 
-  private rowToUser(row: any, prekeys: any[]): UserRecord {
-    const data = JSON.parse(row.data);
+  private rowToUser(row: UserRow, prekeys: OneTimePrekeyRow[]): UserRecord {
+    const data = JSON.parse(row.data) as PersistedUserData;
     return {
       id: row.id,
       username: data.originalUsername || row.username,
@@ -272,26 +306,26 @@ export class SqliteStore {
   async getUserById(userId: string): Promise<UserRecord | null> {
     const row = this.db
       .prepare("SELECT * FROM users WHERE id = ?")
-      .get(userId) as any;
+      .get(userId) as UserRow | undefined;
     if (!row) return null;
     const prekeys = this.db
       .prepare(
         "SELECT id, publicKey FROM one_time_prekeys WHERE userId = ? ORDER BY id ASC",
       )
-      .all(userId) as any[];
+      .all(userId) as OneTimePrekeyRow[];
     return this.rowToUser(row, prekeys);
   }
 
   async getUserByUsername(username: string): Promise<UserRecord | null> {
     const row = this.db
       .prepare("SELECT * FROM users WHERE username = ? COLLATE NOCASE")
-      .get(username) as any;
+      .get(username) as UserRow | undefined;
     if (!row) return null;
     const prekeys = this.db
       .prepare(
         "SELECT id, publicKey FROM one_time_prekeys WHERE userId = ? ORDER BY id ASC",
       )
-      .all(row.id) as any[];
+      .all(row.id) as OneTimePrekeyRow[];
     return this.rowToUser(row, prekeys);
   }
 
@@ -310,7 +344,7 @@ export class SqliteStore {
     );
 
     const tx = this.db.transaction(() => {
-      const prekey = stmtSelect.get(userId) as any;
+      const prekey = stmtSelect.get(userId) as OneTimePrekeyRow | undefined;
       if (prekey) {
         stmtDelete.run(userId, prekey.id);
         return { id: prekey.id, publicKey: prekey.publicKey };
@@ -341,8 +375,8 @@ export class SqliteStore {
       .prepare(
         "SELECT COUNT(*) as count FROM one_time_prekeys WHERE userId = ?",
       )
-      .get(userId) as any;
-    return row.count;
+      .get(userId) as { count: number } | undefined;
+    return row?.count ?? 0;
   }
 
   async storePendingMessage(

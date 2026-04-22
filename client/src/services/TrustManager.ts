@@ -165,7 +165,17 @@ export async function markContactTrusted(
 ): Promise<void> {
   const store = getKeyStore();
   const existing = await store.getContact(contactId);
-  if (!existing) return;
+  if (!existing) {
+    await store.storeContact({
+      id: contactId,
+      username: username ?? defaultUsername(contactId),
+      status: "offline",
+      trustState: "trusted",
+      trustWarning: undefined,
+      trustUpdatedAt: Date.now(),
+    });
+    return;
+  }
 
   await store.storeContact({
     ...existing,

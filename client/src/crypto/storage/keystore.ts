@@ -11,8 +11,28 @@
 const DB_NAME = "SecureMsgKeyStore";
 const DB_VERSION = 2;
 const AT_REST_SALT_PREFIX = "securemsg.atrest.salt.";
+const ARRAY_BUFFER_TAG = "securemsg.arraybuffer.v1";
 
 let activeAtRestKey: CryptoKey | null = null;
+let activeStorageUserId: string | null = null;
+
+function requireActiveStorageUserId(): string {
+  if (!activeStorageUserId) {
+    throw new Error(
+      "At-rest key unavailable. Login required to unlock storage.",
+    );
+  }
+  return activeStorageUserId;
+}
+
+function toScopedStorageId(ownerUserId: string, rawId: string): string {
+  return `${ownerUserId}:${rawId}`;
+}
+
+function fromScopedStorageId(ownerUserId: string, value: string): string {
+  const prefix = `${ownerUserId}:`;
+  return value.startsWith(prefix) ? value.slice(prefix.length) : value;
+}
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -83,6 +103,62 @@ async function decryptString(encoded: string): Promise<string> {
   return new TextDecoder().decode(await decryptBytes(encoded));
 }
 
+function serializeEncryptedPayload(value: unknown): unknown {
+  if (value instanceof ArrayBuffer) {
+    return {
+      __type: ARRAY_BUFFER_TAG,
+      data: bytesToBase64(new Uint8Array(value)),
+    };
+  }
+
+  if (Array.isArray(value)) {
+    return value.map((entry) => serializeEncryptedPayload(entry));
+  }
+
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value)) {
+      out[key] = serializeEncryptedPayload(entry);
+    }
+    return out;
+  }
+
+  return value;
+}
+
+function deserializeEncryptedPayload(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((entry) => deserializeEncryptedPayload(entry));
+  }
+
+  if (value && typeof value === "object") {
+    const candidate = value as Record<string, unknown>;
+    if (
+      candidate.__type === ARRAY_BUFFER_TAG &&
+      typeof candidate.data === "string"
+    ) {
+      return base64ToBytes(candidate.data).buffer;
+    }
+
+    const out: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(candidate)) {
+      out[key] = deserializeEncryptedPayload(entry);
+    }
+    return out;
+  }
+
+  return value;
+}
+
+async function encryptStructuredPayload(value: unknown): Promise<string> {
+  return encryptString(JSON.stringify(serializeEncryptedPayload(value)));
+}
+
+async function decryptStructuredPayload<T>(encoded: string): Promise<T> {
+  const parsed = JSON.parse(await decryptString(encoded)) as unknown;
+  return deserializeEncryptedPayload(parsed) as T;
+}
+
 export async function setAtRestPassphrase(
   userId: string,
   password: string,
@@ -114,10 +190,12 @@ export async function setAtRestPassphrase(
     false,
     ["encrypt", "decrypt"],
   );
+  activeStorageUserId = userId;
 }
 
 export function clearAtRestPassphrase(): void {
   activeAtRestKey = null;
+  activeStorageUserId = null;
 }
 
 // Store names
@@ -443,13 +521,20 @@ export class KeyStore {
    */
   async storeSession(session: StoredSession): Promise<void> {
     const db = await this.ensureReady();
-    const payloadEnc = await encryptString(JSON.stringify(session));
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedPeerId = toScopedStorageId(ownerUserId, session.peerId);
+    const payloadEnc = await encryptStructuredPayload(session);
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(SESSION_STORE, "readwrite");
       const store = tx.objectStore(SESSION_STORE);
 
-      const request = store.put({ peerId: session.peerId, payloadEnc });
+      const request = store.put({
+        peerId: scopedPeerId,
+        peerIdRaw: session.peerId,
+        ownerUserId,
+        payloadEnc,
+      });
 
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
@@ -461,12 +546,14 @@ export class KeyStore {
    */
   async getSession(peerId: string): Promise<StoredSession | null> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedPeerId = toScopedStorageId(ownerUserId, peerId);
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(SESSION_STORE, "readonly");
       const store = tx.objectStore(SESSION_STORE);
 
-      const request = store.get(peerId);
+      const request = store.get(scopedPeerId);
 
       request.onsuccess = async () => {
         try {
@@ -480,7 +567,7 @@ export class KeyStore {
             return;
           }
           resolve(
-            JSON.parse(await decryptString(result.payloadEnc)) as StoredSession,
+            await decryptStructuredPayload<StoredSession>(result.payloadEnc),
           );
         } catch (error) {
           reject(error);
@@ -495,12 +582,14 @@ export class KeyStore {
    */
   async deleteSession(peerId: string): Promise<void> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedPeerId = toScopedStorageId(ownerUserId, peerId);
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(SESSION_STORE, "readwrite");
       const store = tx.objectStore(SESSION_STORE);
 
-      const request = store.delete(peerId);
+      const request = store.delete(scopedPeerId);
 
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
@@ -512,6 +601,8 @@ export class KeyStore {
    */
   async getAllSessions(): Promise<StoredSession[]> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedPrefix = `${ownerUserId}:`;
 
     return new Promise((resolve, reject) => {
       const tx = db.transaction(SESSION_STORE, "readonly");
@@ -524,14 +615,40 @@ export class KeyStore {
           const rows = (request.result ?? []) as Array<Record<string, unknown>>;
           const restored: StoredSession[] = [];
           for (const row of rows) {
+            const storedOwner =
+              typeof row.ownerUserId === "string" ? row.ownerUserId : undefined;
+            const storedPeerId =
+              typeof row.peerId === "string" ? row.peerId : undefined;
+            const rowBelongsToActiveUser =
+              storedOwner === ownerUserId ||
+              (storedOwner === undefined &&
+                typeof storedPeerId === "string" &&
+                storedPeerId.startsWith(scopedPrefix));
+
+            if (!rowBelongsToActiveUser) {
+              continue;
+            }
+
             if (typeof row.payloadEnc === "string") {
-              restored.push(
-                JSON.parse(
-                  await decryptString(row.payloadEnc),
-                ) as StoredSession,
+              const session = await decryptStructuredPayload<StoredSession>(
+                row.payloadEnc,
               );
+              restored.push({
+                ...session,
+                peerId:
+                  typeof row.peerIdRaw === "string"
+                    ? row.peerIdRaw
+                    : fromScopedStorageId(ownerUserId, session.peerId),
+              });
             } else {
-              restored.push(row as unknown as StoredSession);
+              const raw = row as unknown as StoredSession;
+              restored.push({
+                ...raw,
+                peerId:
+                  typeof row.peerIdRaw === "string"
+                    ? row.peerIdRaw
+                    : fromScopedStorageId(ownerUserId, raw.peerId),
+              });
             }
           }
           resolve(restored);
@@ -573,14 +690,19 @@ export class KeyStore {
    */
   async clearRuntimeData(): Promise<void> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedPrefix = `${ownerUserId}:`;
 
     const storeNames = [SESSION_STORE, MESSAGE_STORE];
     const tx = db.transaction(storeNames, "readwrite");
 
     return new Promise((resolve, reject) => {
-      for (const name of storeNames) {
-        tx.objectStore(name).clear();
-      }
+      tx.objectStore(SESSION_STORE).delete(
+        IDBKeyRange.bound(scopedPrefix, `${scopedPrefix}\uffff`),
+      );
+      tx.objectStore(MESSAGE_STORE).delete(
+        IDBKeyRange.bound(scopedPrefix, `${scopedPrefix}\uffff`),
+      );
       tx.oncomplete = () => resolve();
       tx.onerror = () => reject(tx.error);
     });
@@ -593,8 +715,16 @@ export class KeyStore {
    */
   async storeMessage(message: StoredMessage): Promise<void> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedMessageId = toScopedStorageId(ownerUserId, message.id);
+    const scopedPeerId = toScopedStorageId(ownerUserId, message.peerId);
     const persisted: Record<string, unknown> = {
       ...message,
+      id: scopedMessageId,
+      messageId: message.id,
+      ownerUserId,
+      peerId: scopedPeerId,
+      peerIdRaw: message.peerId,
       contentEnc: await encryptString(message.content),
     };
     delete persisted.content;
@@ -613,23 +743,55 @@ export class KeyStore {
    */
   async getMessagesByPeer(peerId: string): Promise<StoredMessage[]> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedPeerId = toScopedStorageId(ownerUserId, peerId);
     return new Promise((resolve, reject) => {
       const tx = db.transaction(MESSAGE_STORE, "readonly");
       const store = tx.objectStore(MESSAGE_STORE);
       const index = store.index("peerId");
-      const request = index.getAll(peerId);
+      const request = index.getAll(scopedPeerId);
       request.onsuccess = async () => {
         try {
           const rows = (request.result ?? []) as Array<Record<string, unknown>>;
+          if (rows.some((row) => typeof row.contentEnc === "string")) {
+            requireAtRestKey();
+          }
           const results: StoredMessage[] = [];
           for (const row of rows) {
-            if (typeof row.contentEnc === "string") {
-              results.push({
-                ...(row as unknown as StoredMessage),
-                content: await decryptString(row.contentEnc),
-              });
-            } else {
-              results.push(row as unknown as StoredMessage);
+            try {
+              const normalizedId =
+                typeof row.messageId === "string"
+                  ? row.messageId
+                  : typeof row.id === "string"
+                    ? fromScopedStorageId(ownerUserId, row.id)
+                    : "";
+              const normalizedPeerId =
+                typeof row.peerIdRaw === "string"
+                  ? row.peerIdRaw
+                  : typeof row.peerId === "string"
+                    ? fromScopedStorageId(ownerUserId, row.peerId)
+                    : peerId;
+
+              if (typeof row.contentEnc === "string") {
+                results.push({
+                  ...(row as unknown as StoredMessage),
+                  id: normalizedId,
+                  peerId: normalizedPeerId,
+                  content: await decryptString(row.contentEnc),
+                });
+              } else {
+                results.push({
+                  ...(row as unknown as StoredMessage),
+                  id: normalizedId,
+                  peerId: normalizedPeerId,
+                });
+              }
+            } catch (error) {
+              console.warn(
+                "[KeyStore] Skipping undecryptable message row for peer",
+                peerId,
+                error,
+              );
             }
           }
           results.sort((a, b) => a.timestamp - b.timestamp);
@@ -647,22 +809,65 @@ export class KeyStore {
    */
   async getAllMessages(): Promise<StoredMessage[]> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedPrefix = `${ownerUserId}:`;
     return new Promise((resolve, reject) => {
       const tx = db.transaction(MESSAGE_STORE, "readonly");
       const store = tx.objectStore(MESSAGE_STORE);
       const request = store.getAll();
       request.onsuccess = async () => {
         try {
-          const rows = (request.result ?? []) as Array<Record<string, unknown>>;
+          const allRows = (request.result ?? []) as Array<
+            Record<string, unknown>
+          >;
+          const rows = allRows.filter((row) => {
+            const storedOwner =
+              typeof row.ownerUserId === "string" ? row.ownerUserId : undefined;
+            if (storedOwner === ownerUserId) return true;
+            if (storedOwner !== undefined) return false;
+
+            return (
+              typeof row.id === "string" && row.id.startsWith(scopedPrefix)
+            );
+          });
+          if (rows.some((row) => typeof row.contentEnc === "string")) {
+            requireAtRestKey();
+          }
           const results: StoredMessage[] = [];
           for (const row of rows) {
-            if (typeof row.contentEnc === "string") {
-              results.push({
-                ...(row as unknown as StoredMessage),
-                content: await decryptString(row.contentEnc),
-              });
-            } else {
-              results.push(row as unknown as StoredMessage);
+            try {
+              const normalizedId =
+                typeof row.messageId === "string"
+                  ? row.messageId
+                  : typeof row.id === "string"
+                    ? fromScopedStorageId(ownerUserId, row.id)
+                    : "";
+              const normalizedPeerId =
+                typeof row.peerIdRaw === "string"
+                  ? row.peerIdRaw
+                  : typeof row.peerId === "string"
+                    ? fromScopedStorageId(ownerUserId, row.peerId)
+                    : "";
+
+              if (typeof row.contentEnc === "string") {
+                results.push({
+                  ...(row as unknown as StoredMessage),
+                  id: normalizedId,
+                  peerId: normalizedPeerId,
+                  content: await decryptString(row.contentEnc),
+                });
+              } else {
+                results.push({
+                  ...(row as unknown as StoredMessage),
+                  id: normalizedId,
+                  peerId: normalizedPeerId,
+                });
+              }
+            } catch (error) {
+              console.warn(
+                "[KeyStore] Skipping undecryptable stored message row",
+                error,
+              );
             }
           }
           resolve(results);
@@ -681,10 +886,20 @@ export class KeyStore {
    */
   async storeContact(contact: StoredContact): Promise<void> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedContactId = toScopedStorageId(ownerUserId, contact.id);
+
+    const persisted: Record<string, unknown> = {
+      ...contact,
+      id: scopedContactId,
+      contactId: contact.id,
+      ownerUserId,
+    };
+
     return new Promise((resolve, reject) => {
       const tx = db.transaction(CONTACT_STORE, "readwrite");
       const store = tx.objectStore(CONTACT_STORE);
-      const request = store.put(contact);
+      const request = store.put(persisted);
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
     });
@@ -695,11 +910,29 @@ export class KeyStore {
    */
   async getContact(contactId: string): Promise<StoredContact | null> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedContactId = toScopedStorageId(ownerUserId, contactId);
     return new Promise((resolve, reject) => {
       const tx = db.transaction(CONTACT_STORE, "readonly");
       const store = tx.objectStore(CONTACT_STORE);
-      const request = store.get(contactId);
-      request.onsuccess = () => resolve(request.result ?? null);
+      const request = store.get(scopedContactId);
+      request.onsuccess = () => {
+        const row = request.result as Record<string, unknown> | undefined;
+        if (!row) {
+          resolve(null);
+          return;
+        }
+
+        resolve({
+          ...(row as unknown as StoredContact),
+          id:
+            typeof row.contactId === "string"
+              ? row.contactId
+              : typeof row.id === "string"
+                ? fromScopedStorageId(ownerUserId, row.id)
+                : contactId,
+        });
+      };
       request.onerror = () => reject(request.error);
     });
   }
@@ -709,11 +942,37 @@ export class KeyStore {
    */
   async getAllContacts(): Promise<StoredContact[]> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedPrefix = `${ownerUserId}:`;
     return new Promise((resolve, reject) => {
       const tx = db.transaction(CONTACT_STORE, "readonly");
       const store = tx.objectStore(CONTACT_STORE);
       const request = store.getAll();
-      request.onsuccess = () => resolve(request.result ?? []);
+      request.onsuccess = () => {
+        const rows = (request.result ?? []) as Array<Record<string, unknown>>;
+        const filtered = rows
+          .filter((row) => {
+            const storedOwner =
+              typeof row.ownerUserId === "string" ? row.ownerUserId : undefined;
+            if (storedOwner === ownerUserId) return true;
+            if (storedOwner !== undefined) return false;
+
+            return (
+              typeof row.id === "string" && row.id.startsWith(scopedPrefix)
+            );
+          })
+          .map((row) => ({
+            ...(row as unknown as StoredContact),
+            id:
+              typeof row.contactId === "string"
+                ? row.contactId
+                : typeof row.id === "string"
+                  ? fromScopedStorageId(ownerUserId, row.id)
+                  : "",
+          }));
+
+        resolve(filtered);
+      };
       request.onerror = () => reject(request.error);
     });
   }
@@ -723,10 +982,12 @@ export class KeyStore {
    */
   async deleteContact(contactId: string): Promise<void> {
     const db = await this.ensureReady();
+    const ownerUserId = requireActiveStorageUserId();
+    const scopedContactId = toScopedStorageId(ownerUserId, contactId);
     return new Promise((resolve, reject) => {
       const tx = db.transaction(CONTACT_STORE, "readwrite");
       const store = tx.objectStore(CONTACT_STORE);
-      const request = store.delete(contactId);
+      const request = store.delete(scopedContactId);
       request.onsuccess = () => resolve();
       request.onerror = () => reject(request.error);
     });

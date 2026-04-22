@@ -27,7 +27,7 @@ import type {
 import type { PreKeyBundle } from "../crypto/interfaces";
 import { base64ToBytes, bytesToBase64 } from "../crypto/utils/encoding";
 import { getKeyStore } from "../crypto/storage/keystore";
-import { saveSession, getSessionAsync } from "./SessionManager";
+import { deleteSession, saveSession, getSessionAsync } from "./SessionManager";
 import { getPreKeyBundle } from "./api";
 import type { PreKeyBundleDTO } from "./api";
 import {
@@ -225,7 +225,10 @@ export async function getOrCreateLocalIdentity(
 /**
  * Convert a server PreKeyBundleDTO to the crypto PreKeyBundle format.
  */
-function dtoToPreKeyBundle(dto: PreKeyBundleDTO): PreKeyBundle {
+function dtoToPreKeyBundle(
+  dto: PreKeyBundleDTO,
+  includeOneTimePrekey = true,
+): PreKeyBundle {
   const bundle: PreKeyBundle = {
     identityKeyEcc: base64ToBytes(dto.identityKeyEccPub),
     identityKeyPqc: base64ToBytes(dto.identityKeyPqcPub),
@@ -244,7 +247,7 @@ function dtoToPreKeyBundle(dto: PreKeyBundleDTO): PreKeyBundle {
     },
   };
 
-  if (dto.oneTimePrekeyEcc) {
+  if (includeOneTimePrekey && dto.oneTimePrekeyEcc) {
     bundle.oneTimePreKeyEcc = {
       id: dto.oneTimePrekeyEcc.id,
       publicKey: base64ToBytes(dto.oneTimePrekeyEcc.publicKey),
@@ -263,6 +266,9 @@ function dtoToPreKeyBundle(dto: PreKeyBundleDTO): PreKeyBundle {
 export async function initiateHandshakeWithContact(
   myUserId: string,
   contactId: string,
+  options?: {
+    disableOneTimePrekey?: boolean;
+  },
 ): Promise<{ session: Session; handshakeData: string } | null> {
   try {
     // 1. Get local identity
@@ -281,7 +287,10 @@ export async function initiateHandshakeWithContact(
     }
 
     // 3. Convert DTO to crypto format
-    const bundle = dtoToPreKeyBundle(bundleDTO);
+    const bundle = dtoToPreKeyBundle(
+      bundleDTO,
+      !(options?.disableOneTimePrekey ?? false),
+    );
 
     // 4. Perform X3DH initiator handshake
     const { message, session } = await initiateHandshake(identity, bundle);
@@ -347,6 +356,10 @@ export async function handleIncomingHandshake(
     // 4. Update session with real peer ID
     session.peerId = senderId;
 
+    // If this handshake replaces an existing session, clear all in-memory
+    // ratchet/counter state first so message numbers restart consistently.
+    await deleteSession(senderId);
+
     // 5. Save session
     await saveSession(senderId, session);
 
@@ -374,13 +387,20 @@ export async function handleIncomingHandshake(
 export async function ensureSession(
   myUserId: string,
   contactId: string,
+  options?: {
+    disableOneTimePrekey?: boolean;
+  },
 ): Promise<Session | null> {
   // Check for existing session
   const existing = await getSessionAsync(contactId);
   if (existing) return existing;
 
   // Try real handshake
-  const result = await initiateHandshakeWithContact(myUserId, contactId);
+  const result = await initiateHandshakeWithContact(
+    myUserId,
+    contactId,
+    options,
+  );
   if (result) return result.session;
 
   return null;
@@ -394,13 +414,20 @@ export async function ensureSession(
 export async function ensureSessionForOutgoing(
   myUserId: string,
   contactId: string,
+  options?: {
+    disableOneTimePrekey?: boolean;
+  },
 ): Promise<{ session: Session; handshakeData?: string } | null> {
   const existing = await getSessionAsync(contactId);
   if (existing) {
     return { session: existing };
   }
 
-  const initiated = await initiateHandshakeWithContact(myUserId, contactId);
+  const initiated = await initiateHandshakeWithContact(
+    myUserId,
+    contactId,
+    options,
+  );
   if (!initiated) return null;
 
   return {

@@ -21,19 +21,24 @@ describe("handshake serialization", () => {
     expect(parsed.version).toBe(original.version);
     expect(parsed.oneTimePrekeyId).toBe(original.oneTimePrekeyId);
     expect(Array.from(parsed.identityKeyEcc)).toEqual(
-      Array.from(original.identityKeyEcc)
+      Array.from(original.identityKeyEcc),
     );
     expect(Array.from(parsed.ephemeralKeyEcc)).toEqual(
-      Array.from(original.ephemeralKeyEcc)
+      Array.from(original.ephemeralKeyEcc),
     );
     expect(Array.from(parsed.pqcCiphertext)).toEqual(
-      Array.from(original.pqcCiphertext)
+      Array.from(original.pqcCiphertext),
     );
     expect(Array.from(parsed.encryptedPayload ?? new Uint8Array())).toEqual(
-      Array.from(original.encryptedPayload ?? new Uint8Array())
+      Array.from(original.encryptedPayload ?? new Uint8Array()),
     );
     expect(Array.from(parsed.payloadNonce ?? new Uint8Array())).toEqual(
-      Array.from(original.payloadNonce ?? new Uint8Array())
+      Array.from(original.payloadNonce ?? new Uint8Array()),
     );
+  });
+
+  it("rejects malformed truncated payload", () => {
+    const malformed = new Uint8Array([1, 0, 97]);
+    expect(() => deserializeHandshakeMessage(malformed)).toThrow();
   });
 });

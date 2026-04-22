@@ -18,6 +18,7 @@ import {
   registerUser as apiRegisterUser,
   loginUser as apiLoginUser,
   setAuthToken,
+  getAuthToken,
   getPrekeyCount,
   uploadPrekeys,
 } from "../services/api";
@@ -29,6 +30,7 @@ import {
 const PREKEY_THRESHOLD = 5;
 const PREKEY_BATCH_SIZE = 10;
 const PREKEY_CHECK_INTERVAL_MS = 5 * 60 * 1000;
+const SESSION_UNLOCK_PREFIX = "securemsg.sessionUnlock.";
 
 interface AuthContextType extends AuthState {
   register: (username: string, password: string) => Promise<void>;
@@ -37,6 +39,66 @@ interface AuthContextType extends AuthState {
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+function decodeJwtPayload(token: string): {
+  userId?: string;
+  username?: string;
+  exp?: number;
+} | null {
+  const parts = token.split(".");
+  if (parts.length < 2) return null;
+
+  try {
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    return JSON.parse(atob(padded)) as {
+      userId?: string;
+      username?: string;
+      exp?: number;
+    };
+  } catch {
+    return null;
+  }
+}
+
+function isTokenExpired(exp?: number): boolean {
+  if (!Number.isFinite(exp)) return false;
+  return Date.now() >= (exp as number) * 1000;
+}
+
+function sessionUnlockKey(userId: string): string {
+  return `${SESSION_UNLOCK_PREFIX}${userId}`;
+}
+
+function cacheSessionUnlock(userId: string, password: string): void {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(sessionUnlockKey(userId), password);
+}
+
+function readSessionUnlock(userId: string): string | null {
+  if (typeof window === "undefined") return null;
+  return window.sessionStorage.getItem(sessionUnlockKey(userId));
+}
+
+function clearSessionUnlock(userId?: string): void {
+  if (typeof window === "undefined") return;
+
+  if (userId) {
+    window.sessionStorage.removeItem(sessionUnlockKey(userId));
+    return;
+  }
+
+  const keysToRemove: string[] = [];
+  for (let i = 0; i < window.sessionStorage.length; i += 1) {
+    const key = window.sessionStorage.key(i);
+    if (key?.startsWith(SESSION_UNLOCK_PREFIX)) {
+      keysToRemove.push(key);
+    }
+  }
+  for (const key of keysToRemove) {
+    window.sessionStorage.removeItem(key);
+  }
+}
 
 function toArrayBufferCopy(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(
@@ -168,9 +230,98 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // Check for existing session on mount
   useEffect(() => {
-    // At-rest decryption key is password-derived and session-only.
-    // Require explicit login on app startup.
-    setState((s) => ({ ...s, isLoading: false }));
+    let canceled = false;
+
+    const restoreSession = async () => {
+      const token = getAuthToken();
+      if (!token) {
+        if (!canceled) {
+          setState((s) => ({ ...s, isLoading: false }));
+        }
+        return;
+      }
+
+      const payload = decodeJwtPayload(token);
+      if (
+        !payload?.userId ||
+        !payload.username ||
+        isTokenExpired(payload.exp)
+      ) {
+        setAuthToken(null);
+        clearSessionUnlock(payload?.userId);
+        clearAtRestPassphrase();
+        if (!canceled) {
+          setState((s) => ({ ...s, isLoading: false }));
+        }
+        return;
+      }
+
+      const unlockSecret = readSessionUnlock(payload.userId);
+      if (!unlockSecret) {
+        // Session token exists but local-at-rest unlock material is missing.
+        // Force explicit login to avoid half-authenticated state with inaccessible chat data.
+        setAuthToken(null);
+        if (!canceled) {
+          setState((s) => ({ ...s, isLoading: false }));
+        }
+        return;
+      }
+
+      try {
+        await setAtRestPassphrase(payload.userId, unlockSecret);
+
+        const store = getKeyStore();
+        let localIdentity = await store.getIdentity(payload.userId);
+
+        if (!localIdentity) {
+          const legacyIdentity = await store.getIdentity("local-user");
+          if (legacyIdentity?.userId === payload.userId) {
+            await store.storeIdentity({
+              ...legacyIdentity,
+              id: payload.userId,
+            });
+            localIdentity = legacyIdentity;
+          }
+        }
+
+        if (!localIdentity || localIdentity.userId !== payload.userId) {
+          setAuthToken(null);
+          clearSessionUnlock(payload.userId);
+          clearAtRestPassphrase();
+          if (!canceled) {
+            setState((s) => ({
+              ...s,
+              isLoading: false,
+              error:
+                "No matching local key material found for this account on this browser profile/origin. Use the same profile+origin where this alias was created, or create a new alias.",
+            }));
+          }
+          return;
+        }
+
+        if (!canceled) {
+          setState({
+            user: { id: payload.userId, username: payload.username },
+            isAuthenticated: true,
+            isLoading: false,
+            error: null,
+          });
+        }
+      } catch {
+        setAuthToken(null);
+        clearSessionUnlock(payload.userId);
+        clearAtRestPassphrase();
+        if (!canceled) {
+          setState((s) => ({ ...s, isLoading: false }));
+        }
+      }
+    };
+
+    void restoreSession();
+
+    return () => {
+      canceled = true;
+    };
   }, []);
 
   // ===== Register =====
@@ -237,6 +388,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       await setAtRestPassphrase(serverResponse.userId, password);
+      cacheSessionUnlock(serverResponse.userId, password);
 
       // Store identity locally
       await storeLocalIdentity(serverResponse.userId, normalizedUsername, {
@@ -334,6 +486,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       await setAtRestPassphrase(response.userId, password);
+      cacheSessionUnlock(response.userId, password);
 
       // Require existing local key material for secure operation.
       const store = getKeyStore();
@@ -388,10 +541,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
 
   // ===== Logout =====
   const logout = async () => {
-    setAuthToken(null);
-    clearAtRestPassphrase();
+    const currentUserId = state.user?.id;
     const store = getKeyStore();
+
+    // Clear scoped runtime rows while storage user context is still active.
     await store.clearRuntimeData();
+
+    setAuthToken(null);
+    clearSessionUnlock(currentUserId);
+    clearAtRestPassphrase();
     setState({
       user: null,
       isAuthenticated: false,

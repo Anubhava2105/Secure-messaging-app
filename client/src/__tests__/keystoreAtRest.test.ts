@@ -5,7 +5,18 @@ import {
   setAtRestPassphrase,
   type StoredIdentity,
   type StoredMessage,
+  type StoredSession,
 } from "../crypto/storage/keystore";
+
+function equalBytes(a: ArrayBuffer, b: ArrayBuffer): boolean {
+  const left = new Uint8Array(a);
+  const right = new Uint8Array(b);
+  if (left.length !== right.length) return false;
+  for (let i = 0; i < left.length; i += 1) {
+    if (left[i] !== right[i]) return false;
+  }
+  return true;
+}
 
 describe("keystore at-rest encryption", () => {
   beforeEach(async () => {
@@ -71,6 +82,56 @@ describe("keystore at-rest encryption", () => {
 
     clearAtRestPassphrase();
     await expect(store.getMessagesByPeer("b")).rejects.toThrow(
+      /At-rest key unavailable/,
+    );
+  });
+
+  it("round-trips encrypted sessions with ArrayBuffer fields intact", async () => {
+    const userId = "user-session";
+    await setAtRestPassphrase(userId, "session-storage-password");
+
+    const store = getKeyStore();
+    const session: StoredSession = {
+      peerId: "peer-1",
+      sessionId: "s-1",
+      encryptionKey: new Uint8Array(32).fill(1).buffer,
+      macKey: new Uint8Array(32).fill(2).buffer,
+      rootKey: new Uint8Array(32).fill(3).buffer,
+      sendChainKey: new Uint8Array(32).fill(4).buffer,
+      recvChainKey: new Uint8Array(32).fill(5).buffer,
+      messageCounter: 7,
+      sendMessageCounter: 7,
+      recvMessageCounter: 3,
+      recvCountersByRatchet: [{ ratchetId: "base", nextMessageNumber: 3 }],
+      localRatchetPublicKey: new Uint8Array(97).fill(9).buffer,
+      remoteRatchetPublicKey: new Uint8Array(97).fill(10).buffer,
+      skippedMessageKeys: [
+        {
+          ratchetId: "base",
+          messageNumber: 1,
+          key: new Uint8Array(32).fill(11).buffer,
+        },
+      ],
+      createdAt: Date.now(),
+      lastUsed: Date.now(),
+    };
+
+    await store.storeSession(session);
+    const restored = await store.getSession(session.peerId);
+
+    expect(restored).not.toBeNull();
+    expect(restored?.sendChainKey).toBeInstanceOf(ArrayBuffer);
+    expect(restored?.recvChainKey).toBeInstanceOf(ArrayBuffer);
+    expect(restored?.localRatchetPublicKey).toBeInstanceOf(ArrayBuffer);
+    expect(restored?.remoteRatchetPublicKey).toBeInstanceOf(ArrayBuffer);
+    expect(restored?.sendChainKey.byteLength).toBe(32);
+    expect(restored?.recvChainKey.byteLength).toBe(32);
+    expect(restored?.localRatchetPublicKey?.byteLength).toBe(97);
+    expect(restored?.remoteRatchetPublicKey?.byteLength).toBe(97);
+    expect(equalBytes(restored!.sendChainKey, session.sendChainKey)).toBe(true);
+
+    clearAtRestPassphrase();
+    await expect(store.getSession(session.peerId)).rejects.toThrow(
       /At-rest key unavailable/,
     );
   });

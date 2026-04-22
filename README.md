@@ -1,10 +1,12 @@
 # Secure Messaging App
 
-A post-quantum resistant secure messaging application designed to defend against **Harvest Now, Decrypt Later (HNDL)** attacks.
+A post-quantum resistant secure messaging application designed to defend against
+**Harvest Now, Decrypt Later (HNDL)** attacks.
 
 ## 🔐 Security Features
 
-- **Hybrid Key Exchange**: Combines classical ECC (NIST P-384) with post-quantum ML-KEM-768 (Kyber)
+- **Hybrid Key Exchange**: Combines classical ECC (NIST P-384) with post-quantum
+  ML-KEM-768 (Kyber)
 - **Zero-Knowledge Server**: Relay server cannot decrypt messages or access keys
 - **End-to-End Encryption**: AES-GCM-256 authenticated encryption
 - **Forward Secrecy**: Ephemeral keys ensure past sessions remain secure
@@ -27,7 +29,7 @@ secure-messaging-app/
 │   └── src/
 │       ├── routes/         # REST API endpoints
 │       ├── websocket/      # Real-time message relay
-│       └── store/          # In-memory data store
+│       └── store/          # SQLite-backed persistence and queue controls
 └── electron/               # Electron desktop wrapper
     └── src/
         ├── main.ts         # Security-hardened main process
@@ -115,13 +117,48 @@ npm run electron
 
 ## ⚠️ Security Notes
 
-1. **ML-KEM-768**: PQC uses the `mlkem` package (pure TypeScript FIPS 203 implementation).
+1. **ML-KEM-768**: PQC uses the `mlkem` package (pure TypeScript FIPS 203
+   implementation).
 
 2. **JWT Authentication**: API and WebSocket auth use signed JWTs.
 
-3. **TLS Required**: For production, set `VITE_WS_URL` / `VITE_API_BASE_URL` to your HTTPS/WSS endpoints.
+3. **TLS Required**: For production, set secure relay origins
+   (`VITE_RELAY_ORIGIN`, `RELAY_ORIGIN`) or explicit secure endpoint overrides
+   (`VITE_WS_URL`, `VITE_API_BASE_URL`).
 
-4. **Prekey Replenishment**: Monitor one-time prekey counts and replenish when low.
+4. **Prekey Replenishment**: Monitor one-time prekey counts and replenish when
+   low.
+
+## 🧩 Production Configuration
+
+Use environment variables to enforce production-safe defaults.
+
+Client (Vite):
+
+- `VITE_RELAY_ORIGIN=https://relay.example.com`
+- Optional overrides: `VITE_API_BASE_URL`, `VITE_WS_URL`
+
+Server:
+
+- `NODE_ENV=production`
+- `JWT_SECRET=<strong-random-secret>`
+- `CORS_ORIGINS=https://app.example.com,https://desktop.example.com`
+- `JWT_EXPIRES_IN=12h`
+- `LOGIN_MAX_ATTEMPTS=5`
+- `LOGIN_WINDOW_MS=60000`
+- `LOGIN_LOCK_MS=300000`
+- `PREKEY_FETCH_WINDOW_MS=60000`
+- `PREKEY_FETCH_MAX_PER_WINDOW=30`
+- `MAX_PENDING_MESSAGES_PER_USER=500`
+- `PENDING_MESSAGE_TTL_MS=604800000`
+- `MAX_PENDING_DELIVERY_BATCH=100`
+- `PENDING_DELIVERY_LEASE_MS=30000`
+- `MAX_PENDING_DELIVERY_ATTEMPTS=20`
+
+Electron:
+
+- `RELAY_ORIGIN=https://relay.example.com`
+- Optional for local development only: `ALLOW_INSECURE_DEV_CERTS=true`
 
 ## 📋 Roadmap
 
@@ -129,8 +166,7 @@ npm run electron
 - [x] Zero-knowledge relay server
 - [x] Secure Electron configuration
 - [x] Double Ratchet for per-message forward secrecy
-- [ ] Group messaging
-- [ ] Voice/video calls
+- [x] Group messaging (initial fan-out implementation)
 
 ## 📄 License
 

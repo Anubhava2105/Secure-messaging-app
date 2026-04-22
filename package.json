@@ -18,7 +18,8 @@
     "build": "npm run build:client && npm run build:server && npm run build:electron",
     "start:server": "cd server && npm run start",
     "electron": "cd electron && npm run start",
-    "install:all": "npm install && cd client && npm install && cd ../server && npm install && cd ../electron && npm install"
+    "install:all": "npm install && cd client && npm install && cd ../server && npm install && cd ../electron && npm install",
+    "benchmark:crypto": "node ./scripts/generate-crypto-benchmark-report.mjs"
   },
   "keywords": [
     "secure-messaging",

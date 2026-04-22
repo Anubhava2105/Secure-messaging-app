@@ -35,7 +35,6 @@ import { base64ToBytes, bytesToBase64 } from "../crypto/utils/encoding";
 import { useWebSocket } from "../hooks/useWebSocket";
 import { encryptMessage, decryptMessage } from "../utils/messageEncryption";
 import {
-  ensureSession,
   ensureSessionForOutgoing,
   handleIncomingHandshake,
 } from "../services/HandshakeManager";
@@ -66,6 +65,26 @@ interface MessengerContextType {
 const MessengerContext = createContext<MessengerContextType | undefined>(
   undefined,
 );
+const ACTIVE_CONVERSATION_PREFIX = "securemsg.activeConversation.";
+const LEGACY_DEMO_CONTACT_USERNAMES = new Set(["kenny", "bob", "alice"]);
+
+function isPlaceholderDirectUsername(contact: {
+  id: string;
+  username: string;
+  kind?: "direct" | "group";
+}): boolean {
+  if (contact.kind === "group") return false;
+
+  const trimmed = contact.username.trim();
+  if (!trimmed) return true;
+  if (trimmed === contact.id) return true;
+
+  return /^User-[A-Za-z0-9]{8,}$/.test(trimmed);
+}
+
+function activeConversationKey(userId: string): string {
+  return `${ACTIVE_CONVERSATION_PREFIX}${userId}`;
+}
 
 function isGroupContact(contact: Contact | null): boolean {
   return Boolean(contact?.kind === "group");
@@ -187,6 +206,15 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
               }
             : contact,
         ),
+      );
+      setActiveContact((prev) =>
+        prev && prev.id === contactId
+          ? {
+              ...prev,
+              trustState,
+              trustWarning,
+            }
+          : prev,
       );
     },
     [],
@@ -335,6 +363,12 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       const sessionContext = await ensureSessionForOutgoing(
         user.id,
         recipientId,
+        {
+          // If we're resetting after peer-side decrypt failure, prefer a
+          // three-DH handshake (without one-time prekey) for compatibility
+          // with stale server-side one-time prekey inventories.
+          disableOneTimePrekey: forceSessionReset,
+        },
       );
       if (!sessionContext) {
         throw new Error("Failed to establish secure session");
@@ -349,11 +383,47 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         pendingHandshakeByPeer.current.delete(recipientId);
       }
 
+      let sendContext:
+        | {
+            messageKey: Uint8Array;
+            messageNumber: number;
+            ratchetPublicKey?: Uint8Array;
+          }
+        | undefined;
+
+      try {
+        sendContext = await nextSendMessageKeyWithNumber(recipientId);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        const sessionStateLikelyCorrupted =
+          /Invalid public key size|Invalid .*key size|operation-specific reason|Data provided to an operation does not meet requirements/i.test(
+            reason,
+          );
+
+        if (sessionStateLikelyCorrupted && !forceSessionReset) {
+          console.warn(
+            "[Messenger] Outbound session state invalid; recreating secure session",
+            reason,
+          );
+          await transmitOutboundMessage(
+            content,
+            recipientId,
+            messageId,
+            timestamp,
+            true,
+            groupMeta,
+          );
+          return;
+        }
+
+        throw error;
+      }
+
       const {
         messageKey: sendMessageKey,
         messageNumber,
         ratchetPublicKey,
-      } = await nextSendMessageKeyWithNumber(recipientId);
+      } = sendContext;
       const encryptedBlob = await encryptMessage(content, sendMessageKey, {
         messageId,
         senderId: user.id,
@@ -418,9 +488,9 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
             return;
           }
 
-          // Ignore stale peer errors for messages that already advanced
-          // to a terminal/success state (e.g. ACK arrived first).
-          if (failed.status !== "sending") {
+          // ACK from relay means queued/forwarded, not decrypt-successful.
+          // Allow one repair retry for messages that are still sending or sent.
+          if (failed.status !== "sending" && failed.status !== "sent") {
             return;
           }
 
@@ -429,7 +499,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           if (currentRetries >= 1) {
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === failed.id && m.status === "sending"
+                m.id === failed.id &&
+                (m.status === "sending" || m.status === "sent")
                   ? { ...m, status: "error" }
                   : m,
               ),
@@ -440,7 +511,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
           retryCountByMessage.current.set(failed.id, currentRetries + 1);
           setMessages((prev) =>
             prev.map((m) =>
-              m.id === failed.id && m.status === "sending"
+              m.id === failed.id &&
+              (m.status === "sending" || m.status === "sent")
                 ? { ...m, status: "sending" }
                 : m,
             ),
@@ -461,7 +533,8 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
             );
             setMessages((prev) =>
               prev.map((m) =>
-                m.id === failed.id && m.status === "sending"
+                m.id === failed.id &&
+                (m.status === "sending" || m.status === "sent")
                   ? { ...m, status: "error" }
                   : m,
               ),
@@ -485,7 +558,6 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
       }
 
       if (msg.type === "ack") {
-        retryCountByMessage.current.delete(msg.messageId);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === msg.messageId && (!user || m.senderId === user.id)
@@ -520,6 +592,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
 
       // Handle read receipt
       if (msg.type === "read" && msg.messageId) {
+        retryCountByMessage.current.delete(msg.messageId);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === msg.messageId
@@ -534,6 +607,7 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
 
       // Handle delivered receipt
       if (msg.type === "delivered" && msg.messageId) {
+        retryCountByMessage.current.delete(msg.messageId);
         setMessages((prev) =>
           prev.map((m) =>
             m.id === msg.messageId
@@ -561,6 +635,12 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
         if (user && msg.senderId === user.id) {
           // Ignore self-loop frames defensively.
           return;
+        }
+
+        // Ensure sender appears in contact list even if handshake processing
+        // fails and returns early.
+        if (user && msg.senderId) {
+          autoAddContact(msg.senderId);
         }
 
         const incomingConversationId = msg.groupId ?? msg.senderId;
@@ -618,15 +698,17 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
             .catch(console.error);
         }
 
+        let session = await getSessionAsync(msg.senderId);
+
         // Handle handshake messages (first message from a new peer)
         if (msg.handshakeData && user) {
-          const session = await handleIncomingHandshake(
+          const establishedSession = await handleIncomingHandshake(
             user.id,
             msg.senderId,
             msg.handshakeData,
           );
 
-          if (!session) {
+          if (!establishedSession) {
             const trustRecord = await getKeyStore().getContact(msg.senderId);
             if (trustRecord?.trustState === "changed") {
               setContactTrustInMemory(
@@ -635,26 +717,39 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
                 trustRecord.trustWarning,
               );
             }
+
+            // Request peer-side session reset/retry.
+            const failureNotice: WsOutgoingMessage = {
+              type: "error",
+              messageId: msg.messageId || generateRandomId(),
+              recipientId: msg.senderId,
+              error: "decrypt-failed",
+              timestamp: Date.now(),
+            };
+            sendRef.current(JSON.stringify(failureNotice));
+            pendingHandshakeByPeer.current.delete(msg.senderId);
+            return;
           }
+
+          session = establishedSession;
 
           // If peer already established the shared session, any locally pending
           // outbound handshake for the same peer is stale and must be discarded.
           pendingHandshakeByPeer.current.delete(msg.senderId);
         }
 
-        // Get or create session
-        let session = await getSessionAsync(msg.senderId);
-        if (!session && user) {
-          session = await ensureSession(user.id, msg.senderId);
-        }
-
-        // Auto-add sender as contact
-        if (user && msg.senderId) {
-          autoAddContact(msg.senderId);
-        }
-
         if (!session) {
-          console.warn("[Messenger] No session for sender - giving up");
+          console.warn(
+            "[Messenger] No matching session for incoming message; requesting sender retry",
+          );
+          const failureNotice: WsOutgoingMessage = {
+            type: "error",
+            messageId: msg.messageId || generateRandomId(),
+            recipientId: msg.senderId,
+            error: "decrypt-failed",
+            timestamp: Date.now(),
+          };
+          sendRef.current(JSON.stringify(failureNotice));
           return;
         }
 
@@ -762,21 +857,55 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
     sendRef.current = send;
   }, [send]);
 
+  useEffect(() => {
+    if (!user) return;
+
+    const key = activeConversationKey(user.id);
+    if (!activeContact) {
+      window.sessionStorage.removeItem(key);
+      return;
+    }
+
+    window.sessionStorage.setItem(key, activeContact.id);
+  }, [activeContact, user]);
+
   // Load contacts/messages from IndexedDB on mount
   useEffect(() => {
     if (!isAuthenticated || !user) return;
     const store = getKeyStore();
-    store.getAllContacts().then((storedContacts) => {
-      const sanitizedContacts = storedContacts.filter((c) => c.id !== user.id);
+    store
+      .getAllContacts()
+      .then((storedContacts) => {
+        const currentUsername = user.username.trim().toLowerCase();
+        const shouldDropContact = (contact: {
+          id: string;
+          username: string;
+          kind?: "direct" | "group";
+        }) => {
+          if (contact.id === user.id) return true;
+          if (contact.kind === "group") return false;
 
-      // Cleanup legacy/invalid self-contact entries from prior builds.
-      if (sanitizedContacts.length !== storedContacts.length) {
-        store.deleteContact(user.id).catch(console.error);
-      }
+          const normalizedName = contact.username.trim().toLowerCase();
+          if (normalizedName === currentUsername) return true;
+          if (LEGACY_DEMO_CONTACT_USERNAMES.has(normalizedName)) return true;
+          return false;
+        };
 
-      if (sanitizedContacts.length > 0) {
-        setContacts(
-          sanitizedContacts.map((c) => ({
+        const sanitizedContacts = storedContacts.filter(
+          (contact) => !shouldDropContact(contact),
+        );
+        const removedContacts = storedContacts.filter(shouldDropContact);
+
+        if (removedContacts.length > 0) {
+          Promise.all(
+            removedContacts.map((contact) =>
+              store.deleteContact(contact.id).catch(console.error),
+            ),
+          ).catch(console.error);
+        }
+
+        if (sanitizedContacts.length > 0) {
+          const hydratedContacts: Contact[] = sanitizedContacts.map((c) => ({
             id: c.id,
             username: c.username,
             kind: c.kind,
@@ -788,14 +917,115 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
             publicKeyPqc: new Uint8Array(),
             trustState: c.trustState,
             trustWarning: c.trustWarning,
-          })),
-        );
-      }
-    });
-    store.getAllMessages().then((storedMessages) => {
-      if (storedMessages.length > 0) {
-        setMessages(
-          storedMessages.map((m) => {
+          }));
+
+          setContacts((prev) => {
+            const removedIds = new Set(removedContacts.map((c) => c.id));
+            const base = prev.filter((entry) => {
+              if (removedIds.has(entry.id)) return false;
+              if (entry.id === user.id) return false;
+              if (entry.kind === "group") return true;
+
+              const normalizedName = entry.username.trim().toLowerCase();
+              if (normalizedName === currentUsername) return false;
+              if (LEGACY_DEMO_CONTACT_USERNAMES.has(normalizedName))
+                return false;
+              return true;
+            });
+
+            const byId = new Map(base.map((entry) => [entry.id, entry]));
+            for (const contact of hydratedContacts) {
+              const existing = byId.get(contact.id);
+              if (!existing) {
+                byId.set(contact.id, contact);
+                continue;
+              }
+
+              byId.set(contact.id, {
+                ...contact,
+                publicKeyEcc:
+                  existing.publicKeyEcc.length > 0
+                    ? existing.publicKeyEcc
+                    : contact.publicKeyEcc,
+                publicKeyPqc:
+                  existing.publicKeyPqc.length > 0
+                    ? existing.publicKeyPqc
+                    : contact.publicKeyPqc,
+                status:
+                  existing.status === "online" ? "online" : contact.status,
+              });
+            }
+
+            return Array.from(byId.values());
+          });
+
+          const placeholderContacts = sanitizedContacts.filter(
+            isPlaceholderDirectUsername,
+          );
+
+          if (placeholderContacts.length > 0) {
+            Promise.all(
+              placeholderContacts.map(async (contact) => {
+                const userInfo = await findUserById(contact.id);
+                return {
+                  contactId: contact.id,
+                  username: userInfo?.username?.trim() ?? "",
+                };
+              }),
+            )
+              .then((resolved) => {
+                const validUpdates = resolved.filter(
+                  (item) => item.username.length > 0,
+                );
+                if (validUpdates.length === 0) return;
+
+                const updateMap = new Map(
+                  validUpdates.map((item) => [item.contactId, item.username]),
+                );
+
+                setContacts((prev) =>
+                  prev.map((contact) => {
+                    const resolvedName = updateMap.get(contact.id);
+                    if (!resolvedName) return contact;
+                    if (contact.username === resolvedName) return contact;
+                    return { ...contact, username: resolvedName };
+                  }),
+                );
+
+                Promise.all(
+                  validUpdates.map(async (item) => {
+                    const existing = await store.getContact(item.contactId);
+                    if (!existing) return;
+
+                    await store.storeContact({
+                      ...existing,
+                      username: item.username,
+                    });
+                  }),
+                ).catch(console.error);
+              })
+              .catch((error) => {
+                console.error(
+                  "[Messenger] Failed to resolve contact usernames:",
+                  error,
+                );
+              });
+          }
+        } else if (removedContacts.length > 0) {
+          const removedIds = new Set(removedContacts.map((c) => c.id));
+          setContacts((prev) =>
+            prev.filter((entry) => !removedIds.has(entry.id)),
+          );
+        }
+      })
+      .catch((error) => {
+        console.error("[Messenger] Failed to load stored contacts:", error);
+      });
+    store
+      .getAllMessages()
+      .then((storedMessages) => {
+        if (storedMessages.length > 0) {
+          const hydratedMessages = storedMessages.map((m) => {
             const base: Message = {
               id: m.id,
               senderId: m.senderId,
@@ -818,11 +1048,46 @@ export const MessengerProvider: React.FC<{ children: React.ReactNode }> = ({
               ...base,
               conversationId: resolveConversationId(base, user.id),
             };
-          }),
-        );
-      }
-    });
+          });
+
+          setMessages((prev) => {
+            const byId = new Map(prev.map((entry) => [entry.id, entry]));
+            for (const message of hydratedMessages) {
+              if (!byId.has(message.id)) {
+                byId.set(message.id, message);
+              }
+            }
+
+            return Array.from(byId.values()).sort(
+              (a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id),
+            );
+          });
+        }
+      })
+      .catch((error) => {
+        console.error("[Messenger] Failed to load stored messages:", error);
+      });
   }, [isAuthenticated, user]);
+
+  useEffect(() => {
+    if (!activeContact) return;
+    if (!contacts.some((contact) => contact.id === activeContact.id)) {
+      setActiveContact(null);
+    }
+  }, [activeContact, contacts]);
+
+  useEffect(() => {
+    if (!user || activeContact || contacts.length === 0) return;
+
+    const key = activeConversationKey(user.id);
+    const storedId = window.sessionStorage.getItem(key);
+    if (!storedId) return;
+
+    const restored = contacts.find((contact) => contact.id === storedId);
+    if (restored) {
+      setActiveContact(restored);
+    }
+  }, [contacts, activeContact, user]);
 
   useEffect(() => {
     if (!isAuthenticated || !user) return;

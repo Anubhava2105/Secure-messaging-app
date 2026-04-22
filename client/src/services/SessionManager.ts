@@ -9,6 +9,7 @@ import type { Session } from "../crypto/hybrid/handshake";
 import { getKeyStore } from "../crypto/storage/keystore";
 import type { StoredSession } from "../crypto/storage/keystore";
 import {
+  ECC_PUBLIC_KEY_SIZE,
   deriveECDHSharedSecretFromBytes,
   generateExportableECDHKeyPair,
 } from "../crypto/ecc/ecdh";
@@ -36,6 +37,47 @@ const ECDH_ALGORITHM: EcKeyImportParams = {
 };
 
 const LEGACY_RATCHET_ID = "base";
+const DERIVED_KEY_SIZE = 32;
+
+function isValidRatchetPublicKey(
+  key: Uint8Array | undefined,
+): key is Uint8Array {
+  return Boolean(key && key.length === ECC_PUBLIC_KEY_SIZE);
+}
+
+function isArrayBufferOfSize(value: unknown, size: number): boolean {
+  return value instanceof ArrayBuffer && value.byteLength === size;
+}
+
+function isOptionalRatchetArrayBuffer(value: unknown): boolean {
+  return value === undefined || isArrayBufferOfSize(value, ECC_PUBLIC_KEY_SIZE);
+}
+
+function isValidStoredSessionShape(stored: StoredSession): boolean {
+  if (typeof stored.peerId !== "string" || stored.peerId.length === 0) {
+    return false;
+  }
+  if (typeof stored.sessionId !== "string" || stored.sessionId.length === 0) {
+    return false;
+  }
+
+  if (!isArrayBufferOfSize(stored.encryptionKey, DERIVED_KEY_SIZE))
+    return false;
+  if (!isArrayBufferOfSize(stored.macKey, DERIVED_KEY_SIZE)) return false;
+  if (!isArrayBufferOfSize(stored.rootKey, DERIVED_KEY_SIZE)) return false;
+  if (!isArrayBufferOfSize(stored.sendChainKey, DERIVED_KEY_SIZE)) return false;
+  if (!isArrayBufferOfSize(stored.recvChainKey, DERIVED_KEY_SIZE)) return false;
+
+  if (!Number.isInteger(stored.messageCounter) || stored.messageCounter < 0) {
+    return false;
+  }
+
+  if (!isOptionalRatchetArrayBuffer(stored.localRatchetPublicKey)) return false;
+  if (!isOptionalRatchetArrayBuffer(stored.remoteRatchetPublicKey))
+    return false;
+
+  return true;
+}
 
 function toHex(bytes: Uint8Array): string {
   return Array.from(bytes)
@@ -236,10 +278,10 @@ async function toStoredSession(
     recvMessageCounter: recvCounters.get(contactId) ?? 0,
     recvCountersByRatchet: serializedRecvPerRatchet,
     localRatchetPrivateJwk,
-    localRatchetPublicKey: localRatchetPublicKey
+    localRatchetPublicKey: isValidRatchetPublicKey(localRatchetPublicKey)
       ? toArrayBuffer(localRatchetPublicKey)
       : undefined,
-    remoteRatchetPublicKey: remoteRatchetPublicKey
+    remoteRatchetPublicKey: isValidRatchetPublicKey(remoteRatchetPublicKey)
       ? toArrayBuffer(remoteRatchetPublicKey)
       : undefined,
     ratchetNeedsAnnouncement: ratchetNeedsAnnouncement.get(contactId) ?? false,
@@ -280,18 +322,22 @@ async function hydrateSessionState(
   recvCountersByRatchet.set(contactId, recvPerRatchet);
   pruneReceiveEpochState(contactId);
 
-  if (stored.localRatchetPublicKey) {
-    localRatchetPublicKeys.set(
-      contactId,
-      new Uint8Array(stored.localRatchetPublicKey),
-    );
+  const storedLocalRatchetPublicKey = stored.localRatchetPublicKey
+    ? new Uint8Array(stored.localRatchetPublicKey)
+    : undefined;
+  if (isValidRatchetPublicKey(storedLocalRatchetPublicKey)) {
+    localRatchetPublicKeys.set(contactId, storedLocalRatchetPublicKey);
+  } else {
+    localRatchetPublicKeys.delete(contactId);
   }
 
-  if (stored.remoteRatchetPublicKey) {
-    remoteRatchetPublicKeys.set(
-      contactId,
-      new Uint8Array(stored.remoteRatchetPublicKey),
-    );
+  const storedRemoteRatchetPublicKey = stored.remoteRatchetPublicKey
+    ? new Uint8Array(stored.remoteRatchetPublicKey)
+    : undefined;
+  if (isValidRatchetPublicKey(storedRemoteRatchetPublicKey)) {
+    remoteRatchetPublicKeys.set(contactId, storedRemoteRatchetPublicKey);
+  } else {
+    remoteRatchetPublicKeys.delete(contactId);
   }
 
   const restoredLocalPrivate = await importRatchetPrivateKey(
@@ -315,7 +361,11 @@ async function hydrateSessionState(
     ratchetAdvertised.set(contactId, stored.ratchetAdvertised ?? false);
   }
 
-  pendingSendRatchetStep.set(contactId, stored.pendingSendRatchetStep ?? false);
+  pendingSendRatchetStep.set(
+    contactId,
+    remoteRatchetPublicKeys.has(contactId) &&
+      (stored.pendingSendRatchetStep ?? false),
+  );
 
   const skippedMap = new Map<string, Uint8Array>();
   for (const entry of stored.skippedMessageKeys ?? []) {
@@ -484,6 +534,15 @@ async function applySendRatchet(
   const remoteRatchet = remoteRatchetPublicKeys.get(contactId);
   if (!remoteRatchet) return;
 
+  if (!isValidRatchetPublicKey(remoteRatchet)) {
+    console.warn(
+      `[SessionManager] Dropping invalid remote ratchet key for ${contactId}`,
+    );
+    remoteRatchetPublicKeys.delete(contactId);
+    pendingSendRatchetStep.set(contactId, false);
+    return;
+  }
+
   const newLocalRatchet = await generateExportableECDHKeyPair();
   const dhSecret = await deriveECDHSharedSecretFromBytes(
     newLocalRatchet.privateKey,
@@ -535,6 +594,14 @@ export async function getSessionAsync(
 
   const stored = await getKeyStore().getSession(contactId);
   if (!stored) return null;
+
+  if (!isValidStoredSessionShape(stored)) {
+    console.warn(
+      `[SessionManager] Dropping corrupted stored session for contact: ${contactId}`,
+    );
+    await getKeyStore().deleteSession(contactId);
+    return null;
+  }
 
   const session = fromStoredSession(stored);
   activeSessions.set(contactId, session);
@@ -724,6 +791,14 @@ export async function nextReceiveMessageKeyAt(
   }
 
   await ensureLocalRatchetKey(contactId);
+
+  if (
+    incomingRatchetPublicKey &&
+    incomingRatchetPublicKey.length > 0 &&
+    !isValidRatchetPublicKey(incomingRatchetPublicKey)
+  ) {
+    throw new Error("Invalid inbound ratchet key size");
+  }
 
   const currentRemoteRatchetBeforeUpdate =
     remoteRatchetPublicKeys.get(contactId);

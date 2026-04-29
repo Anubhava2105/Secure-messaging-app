@@ -38,7 +38,10 @@ const extraDevOrigins = isProduction
   ? []
   : [...devCorsOrigins, ...electronCorsOrigins].map(normalizeCorsOrigin);
 const effectiveCorsOrigins = Array.from(
-  new Set([...explicitCorsOrigins, ...(corsOrigins.length > 0 ? extraDevOrigins : [])]),
+  new Set([
+    ...explicitCorsOrigins,
+    ...(corsOrigins.length > 0 ? extraDevOrigins : []),
+  ]),
 ).filter(Boolean);
 
 if (isProduction && JWT_SECRET === "dev-secret-change-in-production") {
@@ -62,7 +65,11 @@ const server = Fastify({
 // Register plugins
 await server.register(fastifyCors, {
   origin:
-    effectiveCorsOrigins.length > 0 ? effectiveCorsOrigins : isProduction ? false : true,
+    effectiveCorsOrigins.length > 0
+      ? effectiveCorsOrigins
+      : isProduction
+        ? false
+        : true,
   credentials: true,
 });
 

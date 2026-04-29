@@ -4,7 +4,7 @@
  */
 
 import { useCallback, useRef, useEffect, useState } from "react";
-import { WS_URL } from "../constants";
+import { getWsUrl } from "../constants";
 import { getAuthToken } from "../services/api";
 import type { WsIncomingMessage } from "../types/wsTypes";
 
@@ -16,6 +16,11 @@ declare global {
         url: string,
         token: string,
       ) => Promise<{ success: boolean; error?: string }>;
+      getRuntimeConfig?: () => Promise<{
+        relayOrigin: string;
+        apiBaseUrl: string;
+        wsUrl: string;
+      }>;
       sendMessage: (data: string) => Promise<boolean>;
       disconnectRelay: () => Promise<{ success: boolean }>;
       onMessage: (callback: (data: string) => void) => () => void;
@@ -115,16 +120,17 @@ export function useWebSocket({
     if (!userId) return;
     setConnectionStatus("connecting");
 
+    const token = getAuthToken();
+    if (!token) {
+      console.error("[WebSocket] No auth token available");
+      setConnectionStatus("disconnected");
+      throw new Error("No auth token");
+    }
+
+    const wsUrl = await getWsUrl();
+
     return new Promise<void>((resolve, reject) => {
       try {
-        const token = getAuthToken();
-        if (!token) {
-          console.error("[WebSocket] No auth token available");
-          setConnectionStatus("disconnected");
-          reject(new Error("No auth token"));
-          return;
-        }
-
         if (
           wsRef.current &&
           (wsRef.current.readyState === WebSocket.OPEN ||
@@ -137,7 +143,7 @@ export function useWebSocket({
           }
         }
 
-        const ws = new WebSocket(WS_URL, [`auth.${token}`]);
+        const ws = new WebSocket(wsUrl, [`auth.${token}`]);
         wsRef.current = ws;
 
         ws.onopen = () => {
@@ -219,7 +225,8 @@ export function useWebSocket({
         console.error("[WebSocket] No auth token available");
         return;
       }
-      const res = await window.electronAPI!.connectRelay(WS_URL, token);
+      const wsUrl = await getWsUrl();
+      const res = await window.electronAPI!.connectRelay(wsUrl, token);
       if (res.success) {
         setConnectionStatus("connected");
         await flushOutbox();

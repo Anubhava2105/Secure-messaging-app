@@ -27,6 +27,17 @@ const electronAPI = {
     return ipcRenderer.invoke("get-app-version");
   },
 
+  /**
+   * Get runtime config for API and WebSocket endpoints.
+   */
+  getRuntimeConfig: (): Promise<{
+    relayOrigin: string;
+    apiBaseUrl: string;
+    wsUrl: string;
+  }> => {
+    return ipcRenderer.invoke("get-runtime-config");
+  },
+
   // ==================
   // WebSocket Relay
   // ==================
@@ -38,7 +49,7 @@ const electronAPI = {
    */
   connectRelay: (
     url: string,
-    token: string
+    token: string,
   ): Promise<{ success: boolean; error?: string }> => {
     // Input validation
     if (typeof url !== "string" || typeof token !== "string") {
@@ -104,11 +115,11 @@ const electronAPI = {
    * @returns Cleanup function to unregister
    */
   onConnectionClosed: (
-    callback: (info: { code: number; reason: string }) => void
+    callback: (info: { code: number; reason: string }) => void,
   ): (() => void) => {
     const handler = (
       _event: IpcRendererEvent,
-      info: { code: number; reason: string }
+      info: { code: number; reason: string },
     ) => {
       callback(info);
     };

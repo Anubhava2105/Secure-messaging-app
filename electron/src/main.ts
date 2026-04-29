@@ -29,10 +29,21 @@ import {
 import * as path from "path";
 import { WebSocket } from "ws";
 
-// Prevent multiple instances
-const gotTheLock = app.requestSingleInstanceLock();
-if (!gotTheLock) {
-  app.quit();
+// Test-mode controls for running multiple isolated local Electron instances.
+const allowMultiInstance = process.env.ALLOW_MULTI_INSTANCE === "true";
+const userDataSuffix = (process.env.USER_DATA_SUFFIX ?? "").trim();
+
+if (allowMultiInstance && userDataSuffix.length > 0) {
+  const baseUserData = app.getPath("userData");
+  app.setPath("userData", `${baseUserData}-${userDataSuffix}`);
+}
+
+if (!allowMultiInstance) {
+  // Prevent multiple instances in normal mode.
+  const gotTheLock = app.requestSingleInstanceLock();
+  if (!gotTheLock) {
+    app.quit();
+  }
 }
 
 // Note: The remote module has been removed in Electron 14+
@@ -45,13 +56,50 @@ let mainWindow: BrowserWindow | null = null;
 let wsConnection: WebSocket | null = null;
 
 const isDevelopment = process.env.NODE_ENV === "development";
-const relayOrigin = (process.env.RELAY_ORIGIN ?? "https://relay.securemsg.app")
-  .trim()
-  .replace(/\/+$/, "");
-const relayWsOrigin = relayOrigin
-  .replace(/^http:\/\//i, "ws://")
-  .replace(/^https:\/\//i, "wss://");
+const isPackaged = app.isPackaged;
 const allowInsecureDevCerts = process.env.ALLOW_INSECURE_DEV_CERTS === "true";
+
+type RuntimeConfig = {
+  relayOrigin: string;
+  apiBaseUrl: string;
+  wsUrl: string;
+};
+
+function toWsOrigin(httpOrigin: string): string {
+  return httpOrigin
+    .replace(/^http:\/\//i, "ws://")
+    .replace(/^https:\/\//i, "wss://");
+}
+
+function normalizeHttpOrigin(origin: string): string {
+  const trimmed = origin.trim().replace(/\/+$/, "");
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  return `https://${trimmed}`;
+}
+
+function buildRuntimeConfig(): RuntimeConfig {
+  const defaultRelayOrigin =
+    isPackaged || isDevelopment
+      ? "http://localhost:3000"
+      : "https://relay.securemsg.app";
+  const relayOrigin = normalizeHttpOrigin(
+    process.env.ELECTRON_RELAY_ORIGIN ??
+      process.env.RELAY_ORIGIN ??
+      defaultRelayOrigin,
+  );
+  const wsOrigin = toWsOrigin(relayOrigin);
+
+  return {
+    relayOrigin,
+    apiBaseUrl: `${relayOrigin}/api/v1`,
+    wsUrl: `${wsOrigin}/ws`,
+  };
+}
+
+const runtimeConfig = buildRuntimeConfig();
+console.info("[Electron] Runtime config:", runtimeConfig);
 
 /**
  * Create the main browser window with security hardening.
@@ -107,7 +155,7 @@ function createWindow(): BrowserWindow {
   });
 
   // Set Content Security Policy
-  setContentSecurityPolicy();
+  setContentSecurityPolicy(runtimeConfig);
 
   // Prevent new window creation
   mainWindow.webContents.setWindowOpenHandler(({ url }: { url: string }) => {
@@ -146,7 +194,7 @@ function createWindow(): BrowserWindow {
     mainWindow.webContents.openDevTools();
   } else {
     // Production: load from built files
-    mainWindow.loadFile(path.join(__dirname, "../client/dist/index.html"));
+    mainWindow.loadFile(path.join(__dirname, "../../client/dist/index.html"));
   }
 
   mainWindow.on("closed", () => {
@@ -160,11 +208,10 @@ function createWindow(): BrowserWindow {
 /**
  * Set strict Content Security Policy.
  */
-function setContentSecurityPolicy(): void {
-  const connectSources = ["'self'", relayWsOrigin];
-  if (isDevelopment) {
-    connectSources.push("ws://localhost:3000");
-  }
+function setContentSecurityPolicy(config: RuntimeConfig): void {
+  const apiOrigin = new URL(config.apiBaseUrl).origin;
+  const wsOrigin = new URL(config.wsUrl).origin;
+  const connectSources = Array.from(new Set(["'self'", apiOrigin, wsOrigin]));
 
   session.defaultSession.webRequest.onHeadersReceived(
     (
@@ -182,8 +229,11 @@ function setContentSecurityPolicy(): void {
               // Scripts: self + wasm for PQC crypto
               "script-src 'self' 'wasm-unsafe-eval'",
 
-              // Styles: self + inline (for Tailwind)
-              "style-src 'self' 'unsafe-inline'",
+              // Styles: self + inline + Google Fonts CSS
+              "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+
+              // Style elements (explicit for Google Fonts)
+              "style-src-elem 'self' 'unsafe-inline' https://fonts.googleapis.com",
 
               // Connect: self + configured relay WebSocket endpoint
               `connect-src ${connectSources.join(" ")}`,
@@ -191,8 +241,8 @@ function setContentSecurityPolicy(): void {
               // Images: self + data URIs + blobs
               "img-src 'self' data: blob:",
 
-              // Fonts: self only
-              "font-src 'self'",
+              // Fonts: self + Google Fonts
+              "font-src 'self' https://fonts.gstatic.com",
 
               // No plugins
               "object-src 'none'",
@@ -206,8 +256,10 @@ function setContentSecurityPolicy(): void {
               // No framing
               "frame-ancestors 'none'",
 
-              // Upgrade insecure requests in production
-              !isDevelopment ? "upgrade-insecure-requests" : "",
+              // Upgrade insecure requests only when relay is https
+              !isDevelopment && config.relayOrigin.startsWith("https://")
+                ? "upgrade-insecure-requests"
+                : "",
             ]
               .filter(Boolean)
               .join("; "),
@@ -283,6 +335,11 @@ function closeWebSocket(): void {
 // Get app version
 ipcMain.handle("get-app-version", () => {
   return app.getVersion();
+});
+
+// Get runtime config for renderer
+ipcMain.handle("get-runtime-config", () => {
+  return runtimeConfig;
 });
 
 // Connect to relay server

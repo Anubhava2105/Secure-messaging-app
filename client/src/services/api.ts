@@ -5,7 +5,7 @@
  * SECURITY: Only public data is transferred. No private keys.
  */
 
-import { API_BASE_URL } from "../constants";
+import { getApiBaseUrl } from "../constants";
 
 /** In-memory JWT token storage */
 const AUTH_TOKEN_STORAGE_KEY = "securemsg.authToken";
@@ -67,6 +67,11 @@ function authHeaders(): Record<string, string> {
   return headers;
 }
 
+async function buildApiUrl(path: string): Promise<string> {
+  const baseUrl = await getApiBaseUrl();
+  return `${baseUrl}${path}`;
+}
+
 export interface UserInfo {
   userId: string;
   username: string;
@@ -113,7 +118,7 @@ export async function findUserByUsername(
 ): Promise<UserInfo | null> {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/users/${encodeURIComponent(username)}`,
+      await buildApiUrl(`/users/${encodeURIComponent(username)}`),
     );
     if (!response.ok) {
       if (response.status === 404) return null;
@@ -133,7 +138,7 @@ export async function findUserByUsername(
 export async function findUserById(userId: string): Promise<UserInfo | null> {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/users/id/${encodeURIComponent(userId)}`,
+      await buildApiUrl(`/users/id/${encodeURIComponent(userId)}`),
     );
     if (!response.ok) {
       if (response.status === 404) return null;
@@ -155,7 +160,7 @@ export async function getPreKeyBundle(
 ): Promise<PreKeyBundleDTO | null> {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/users/${encodeURIComponent(userId)}/prekeys`,
+      await buildApiUrl(`/users/${encodeURIComponent(userId)}/prekeys`),
       {
         headers: authHeaders(),
       },
@@ -186,7 +191,7 @@ export async function registerUser(data: {
   oneTimePrekeyEcc?: OneTimePreKey[];
 }): Promise<{ userId: string; username: string; token: string } | null> {
   try {
-    const response = await fetch(`${API_BASE_URL}/register`, {
+    const response = await fetch(await buildApiUrl("/register"), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -215,7 +220,7 @@ export async function loginUser(
   username: string,
   password: string,
 ): Promise<{ userId: string; username: string; token: string } | null> {
-  const response = await fetch(`${API_BASE_URL}/login`, {
+  const response = await fetch(await buildApiUrl("/login"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password }),
@@ -237,7 +242,7 @@ export async function loginUser(
  */
 export async function getPrekeyCount(): Promise<number> {
   try {
-    const response = await fetch(`${API_BASE_URL}/prekeys/count`, {
+    const response = await fetch(await buildApiUrl("/prekeys/count"), {
       headers: authHeaders(),
     });
     if (!response.ok) return 0;
@@ -256,7 +261,7 @@ export async function uploadPrekeys(
   prekeys: OneTimePreKey[],
 ): Promise<boolean> {
   try {
-    const response = await fetch(`${API_BASE_URL}/prekeys`, {
+    const response = await fetch(await buildApiUrl("/prekeys"), {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({ oneTimePrekeys: prekeys }),
@@ -269,7 +274,7 @@ export async function uploadPrekeys(
 
 export async function listGroups(): Promise<GroupInfoDTO[]> {
   try {
-    const response = await fetch(`${API_BASE_URL}/groups`, {
+    const response = await fetch(await buildApiUrl("/groups"), {
       headers: authHeaders(),
     });
     if (!response.ok) {
@@ -286,7 +291,7 @@ export async function listGroups(): Promise<GroupInfoDTO[]> {
 export async function getGroup(groupId: string): Promise<GroupInfoDTO | null> {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/groups/${encodeURIComponent(groupId)}`,
+      await buildApiUrl(`/groups/${encodeURIComponent(groupId)}`),
       {
         headers: authHeaders(),
       },
@@ -305,7 +310,7 @@ export async function createGroup(
   memberUserIds: string[],
 ): Promise<GroupInfoDTO | null> {
   try {
-    const response = await fetch(`${API_BASE_URL}/groups`, {
+    const response = await fetch(await buildApiUrl("/groups"), {
       method: "POST",
       headers: authHeaders(),
       body: JSON.stringify({ name, memberUserIds }),
@@ -327,7 +332,7 @@ export async function addGroupMember(
 ): Promise<GroupInfoDTO | null> {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/groups/${encodeURIComponent(groupId)}/members`,
+      await buildApiUrl(`/groups/${encodeURIComponent(groupId)}/members`),
       {
         method: "POST",
         headers: authHeaders(),
@@ -351,7 +356,9 @@ export async function removeGroupMember(
 ): Promise<GroupInfoDTO | null> {
   try {
     const response = await fetch(
-      `${API_BASE_URL}/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+      await buildApiUrl(
+        `/groups/${encodeURIComponent(groupId)}/members/${encodeURIComponent(userId)}`,
+      ),
       {
         method: "DELETE",
         headers: authHeaders(),

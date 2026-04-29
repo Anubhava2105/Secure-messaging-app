@@ -25,6 +25,21 @@ const corsOrigins = (process.env.CORS_ORIGINS ?? "")
   .split(",")
   .map((value) => value.trim())
   .filter(Boolean);
+const devCorsOrigins = ["http://localhost:5173", "http://localhost:5174"];
+const electronCorsOrigins = ["null", "file://"];
+
+function normalizeCorsOrigin(origin: string): string {
+  if (origin === "file://") return "null";
+  return origin;
+}
+
+const explicitCorsOrigins = corsOrigins.map(normalizeCorsOrigin);
+const extraDevOrigins = isProduction
+  ? []
+  : [...devCorsOrigins, ...electronCorsOrigins].map(normalizeCorsOrigin);
+const effectiveCorsOrigins = Array.from(
+  new Set([...explicitCorsOrigins, ...(corsOrigins.length > 0 ? extraDevOrigins : [])]),
+).filter(Boolean);
 
 if (isProduction && JWT_SECRET === "dev-secret-change-in-production") {
   throw new Error(
@@ -46,7 +61,8 @@ const server = Fastify({
 
 // Register plugins
 await server.register(fastifyCors, {
-  origin: corsOrigins.length > 0 ? corsOrigins : isProduction ? false : true,
+  origin:
+    effectiveCorsOrigins.length > 0 ? effectiveCorsOrigins : isProduction ? false : true,
   credentials: true,
 });
 
